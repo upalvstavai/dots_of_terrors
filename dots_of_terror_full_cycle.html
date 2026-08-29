@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dots of Terror — прототип полного цикла</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#050508; }
+  body { font-family:"Courier New",monospace; color:#b8ffd9; }
+  canvas { display:block; width:100%; height:100%; cursor:crosshair; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:16px; background:rgba(5,5,8,.94); z-index:10; text-align:center; padding:24px; }
+  .overlay h1 { font-size:26px; letter-spacing:6px; color:#39FF9E; font-weight:normal; }
+  .overlay p { font-size:13px; line-height:1.75; max-width:560px; color:#7aa88f; }
+  .overlay .warn { color:#e0503c; }
+  .overlay button { background:none; border:1px solid #39FF9E; color:#39FF9E; font-family:inherit; font-size:15px;
+    letter-spacing:3px; padding:11px 34px; cursor:pointer; }
+  .overlay button:hover { background:#39FF9E; color:#050508; }
+  .hidden { display:none !important; }
+  kbd { border:1px solid #2f5a45; padding:1px 6px; border-radius:3px; color:#9fe6c4; font-family:inherit; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div id="startOv" class="overlay">
+  <h1>DOTS OF TERROR!</h1>
+  <p style="color:#4d7a63">прототип полного цикла · вид сверху · только для ПК</p>
+  <p>
+    Ты просыпаешься в лабиринте с палочкой в руке.<br>
+    Найди четыре полотна, соедини точки — и доберись до выхода.<br><br>
+    <kbd>W A S D</kbd> — движение &nbsp; <kbd>мышь</kbd> — фонарик и рисование<br>
+    <kbd>ПРОБЕЛ</kbd> — вспышка палочки / вырываться из хватки<br><br>
+    На полотне: соединяй точки по порядку цветов внизу.<br>
+    Одинаковых цветов несколько — ищи слабые номерки.<br><br>
+    <span class="warn">Каждая ошибка навсегда делает лабиринт хуже.<br>И здесь есть кто-то ещё. Играй в наушниках.</span>
+  </p>
+  <button id="startBtn">ПРОСНУТЬСЯ</button>
+</div>
+
+<div id="winOv" class="overlay hidden">
+  <h1>ТЫ ВЫБРАЛСЯ</h1>
+  <p id="winStats"></p>
+  <p style="color:#4d7a63">Это прототип. Всё, что ты видел — линии и точки.<br>Представь то же самое от первого лица, в полной темноте.</p>
+  <button id="againBtn">ЕЩЁ РАЗ</button>
+</div>
+
+<script>
+(() => {
+"use strict";
+// ============ utils ============
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+const rng = mulberry32(20260825);
+const rnd = () => Math.random();
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const dist2=(x1,y1,x2,y2)=>{const dx=x1-x2,dy=y1-y2;return dx*dx+dy*dy;};
+const jit=a=>(rnd()-0.5)*a;
+
+// ============ canvas ============
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+let VW=0,VH=0,DPR=Math.min(window.devicePixelRatio||1,2);
+function resize(){VW=innerWidth;VH=innerHeight;cv.width=VW*DPR;cv.height=VH*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);}
+addEventListener('resize',resize);resize();
+const dk=document.createElement('canvas'),dctx=dk.getContext('2d');
+function resizeDark(){dk.width=VW;dk.height=VH;}
+addEventListener('resize',resizeDark);resizeDark();
+
+// ============ audio ============
+let AC=null,MG=null;
+function initAudio(){
+  if(AC)return;
+  AC=new (window.AudioContext||window.webkitAudioContext)();
+  MG=AC.createGain();MG.gain.value=.9;MG.connect(AC.destination);
+  const o1=AC.createOscillator(),o2=AC.createOscillator(),g=AC.createGain();
+  o1.type='sine';o1.frequency.value=46;o2.type='sine';o2.frequency.value=49.5;
+  g.gain.value=.03;o1.connect(g);o2.connect(g);g.connect(MG);o1.start();o2.start();
+}
+function nbuf(d){const b=AC.createBuffer(1,AC.sampleRate*d,AC.sampleRate),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=rnd()*2-1;return b;}
+function playNoise(dur,freq,vol,type){
+  if(!AC)return;
+  const s=AC.createBufferSource();s.buffer=nbuf(dur);
+  const f=AC.createBiquadFilter();f.type=type||'lowpass';f.frequency.value=freq;
+  const g=AC.createGain();g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+dur);
+  s.connect(f);f.connect(g);g.connect(MG);s.start();
+}
+function tone(fr,dur,vol,type){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.type=type||'sine';o.frequency.value=fr;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+dur);
+  o.connect(g);g.connect(MG);o.start();o.stop(AC.currentTime+dur);
+}
+const sfx={
+  step:()=>playNoise(.14,140,.12),
+  skitter:v=>{playNoise(.05,2400,v*.5,'highpass');setTimeout(()=>AC&&playNoise(.05,2600,v*.4,'highpass'),70);},
+  heart:v=>{playNoise(.1,90,v);setTimeout(()=>AC&&playNoise(.09,80,v*.8),180);},
+  ok:i=>tone(340+i*38,.12,.18),
+  err:()=>tone(210,.3,.35,'square'),
+  screech:()=>{playNoise(.9,900,.55,'bandpass');tone(66,1.2,.5,'sawtooth');},
+  flash:()=>{playNoise(.5,3000,.5,'highpass');tone(880,.4,.3);},
+  grab:()=>{tone(90,.5,.5,'sawtooth');playNoise(.4,300,.4);},
+  door:()=>{tone(520,.5,.22);tone(780,.8,.16);},
+  tick:()=>tone(1200,.04,.1,'square'),
+};
+
+// ============ maze ============
+const CELL=48,COLS=23,ROWS=17;
+let grid=[]; // 1 wall, 0 floor
+(function genMaze(){
+  for(let r=0;r<ROWS;r++){grid.push(new Array(COLS).fill(1));}
+  const st=[[1,1]];grid[1][1]=0;
+  while(st.length){
+    const [cr,cc]=st[st.length-1];
+    const dirs=[[0,2],[0,-2],[2,0],[-2,0]].sort(()=>rng()-.5);
+    let moved=false;
+    for(const [dr,dc] of dirs){
+      const nr=cr+dr,nc=cc+dc;
+      if(nr>0&&nr<ROWS-1&&nc>0&&nc<COLS-1&&grid[nr][nc]===1){
+        grid[cr+dr/2][cc+dc/2]=0;grid[nr][nc]=0;st.push([nr,nc]);moved=true;break;
+      }
+    }
+    if(!moved)st.pop();
+  }
+  let loops=0;
+  while(loops<16){
+    const r=1+Math.floor(rng()*(ROWS-2)),c=1+Math.floor(rng()*(COLS-2));
+    if(grid[r][c]===1){
+      const h=grid[r][c-1]===0&&grid[r][c+1]===0, v=grid[r-1][c]===0&&grid[r+1][c]===0;
+      if(h!==v){grid[r][c]=0;loops++;}
+    }
+  }
+})();
+const isWall=(r,c)=>r<0||c<0||r>=ROWS||c>=COLS||grid[r][c]===1;
+const cellCX=c=>c*CELL+CELL/2, cellCY=r=>r*CELL+CELL/2;
+const toCell=(x,y)=>[Math.floor(y/CELL),Math.floor(x/CELL)];
+
+function bfs(sr,sc,wallCost){ // wallCost undefined => floors only
+  const D=Array.from({length:ROWS},()=>new Array(COLS).fill(Infinity));
+  const P=Array.from({length:ROWS},()=>new Array(COLS).fill(null));
+  D[sr][sc]=0;
+  const q=[[0,sr,sc]];
+  while(q.length){
+    q.sort((a,b)=>a[0]-b[0]);
+    const [d,r,c]=q.shift();
+    if(d>D[r][c])continue;
+    for(const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]){
+      const nr=r+dr,nc=c+dc;
+      if(nr<0||nc<0||nr>=ROWS||nc>=COLS)continue;
+      const w=grid[nr][nc]===1?(wallCost===undefined?Infinity:wallCost):1;
+      if(w===Infinity)continue;
+      if(d+w<D[nr][nc]){D[nr][nc]=d+w;P[nr][nc]=[r,c];q.push([d+w,nr,nc]);}
+    }
+  }
+  return {D,P};
+}
+function pathTo(P,r,c){const p=[];let cur=[r,c];while(cur){p.push(cur);cur=P[cur[0]][cur[1]];}return p.reverse();}
+
+// feature placement by distance from start
+const START=[1,1];
+const base=bfs(START[0],START[1]);
+let maxD=0,floors=[];
+for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)
+  if(grid[r][c]===0&&isFinite(base.D[r][c])){floors.push([r,c]);maxD=Math.max(maxD,base.D[r][c]);}
+const used=[];
+function farFromUsed(r,c){return used.every(([ur,uc])=>Math.abs(ur-r)+Math.abs(uc-c)>=5);}
+function placeAt(frac){
+  let best=null,bd=Infinity;
+  for(const [r,c] of floors){
+    const d=Math.abs(base.D[r][c]-frac*maxD);
+    if(d<bd&&farFromUsed(r,c)){bd=d;best=[r,c];}
+  }
+  used.push(best);return best;
+}
+used.push(START);
+const CANV=[placeAt(.24),placeAt(.44),placeAt(.64),placeAt(.86)];
+const EXIT=(()=>{let best=null,bd=-1;for(const[r,c]of floors){if(base.D[r][c]>bd&&farFromUsed(r,c)){bd=base.D[r][c];best=[r,c];}}used.push(best);return best;})();
+const SAFE=[START.slice(),placeAt(.54)];
+const GUIDE=placeAt(.5);
+
+// ============ shapes / drawing minigame ============
+const PALETTE=['#39FF9E','#4FD8FF','#FF5FA8'];
+const SHAPES=[
+  {name:'ключ',pts:[[.34,.18],[.5,.16],[.52,.34],[.64,.36],[.62,.48],[.52,.46],[.5,.8],[.34,.78]]},
+  {name:'птица',pts:[[.22,.55],[.38,.36],[.5,.44],[.68,.26],[.63,.5],[.74,.55],[.55,.62],[.38,.72]]},
+  {name:'лампа',pts:[[.42,.14],[.58,.14],[.66,.42],[.55,.45],[.55,.62],[.62,.78],[.38,.78],[.45,.62],[.45,.45],[.34,.42]]},
+  {name:'мотылёк',pts:[[.5,.2],[.66,.3],[.74,.55],[.58,.55],[.62,.78],[.5,.66],[.38,.78],[.42,.55],[.26,.55],[.34,.3]]},
+];
+const CANV_TIME=[50,45,40,35];
+const DOT_TIME_COST=2; // сек, снимается с таймера за каждую верно соединённую точку
+
+// ============ state ============
+let state='start'; // start explore draw mash caught win
+let tGlobal=0,lastT=0;
+const keys={};
+const mouse={x:0,y:0,down:false};
+
+const player={x:cellCX(START[1]),y:cellCY(START[0]),r:11,speed:160,stepT:0,wallTouch:0,invuln:0};
+const monster={x:cellCX(EXIT[1]),y:cellCY(EXIT[0]),mode:'roam',target:null,path:[],pathT:0,stun:0,speed:90,visible:false,wallSpot:null,gone:0};
+const flash={charged:true,cd:0,CD:60};
+const madness={errors:0,MAX:6,anger:0};
+const mStage=()=>madness.errors>=6?3:madness.errors>=4?2:madness.errors>=2?1:0;
+const prog={done:0,fearDebuff:false,deaths:0,startTime:0};
+const enc={next:1,armed:false,spot:null}; // fixed encounters 1..3
+let chase=null; // {safe:[r,c], line:[]}
+let mash=null;  // {need,count,timeLeft,onWin,onFail,label}
+let draw=null;  // minigame
+let guide={used:false,trail:null,trailT:0,drawing:false};
+let canvasArm=true;
+let ambushDone=false,ambushT=-1;
+let msg='',msgT=0,caughtT=0;
+let sndSkitT=0,sndHeartT=0,eyes=[];
+
+function say(t,dur){msg=t;msgT=dur||3;}
+
+// ============ input ============
+addEventListener('keydown',e=>{
+  keys[e.code]=true;
+  if(e.code==='Space'){
+    e.preventDefault();
+    if(state==='mash'&&mash){mash.count++;sfx.tick();}
+    else if(state==='explore')tryFlash();
+  }
+  if(e.code==='Escape'&&state==='draw'&&!guide.drawing){canvasArm=false;exitDraw(false);}
+});
+addEventListener('keyup',e=>{keys[e.code]=false;});
+cv.addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;});
+cv.addEventListener('mousedown',e=>{
+  if(state==='draw')drawClick(e.clientX,e.clientY);
+});
+
+// ============ flash ============
+function tryFlash(){
+  if(!flash.charged)return;
+  const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+  if(monster.mode!=='gone'&&d<CELL*6){
+    flash.charged=false;flash.cd=flash.CD;
+    sfx.flash();
+    monster.stun=3.5;
+    // knock the swarm far back
+    let best=null,bd=-1;
+    for(const[r,c]of floors){const dd=dist2(cellCX(c),cellCY(r),player.x,player.y);if(dd>bd){bd=dd;best=[r,c];}}
+    monster.x=cellCX(best[1]);monster.y=cellCY(best[0]);
+    if(monster.mode==='chase'){say('Вспышка отбросила его. Но он вернётся.');}
+    else say('Вспышка. Оно отступило.');
+  } else {
+    say('Рядом никого... вспышку лучше беречь.');
+  }
+}
+
+// ============ drawing minigame ============
+function startDraw(idx,isGuide){
+  const shape=isGuide?{name:'существо',pts:[[.35,.3],[.65,.3],[.7,.6],[.5,.78],[.3,.6]]}:SHAPES[idx];
+  const n=shape.pts.length;
+  const dots=[];
+  shape.pts.forEach((p,i)=>dots.push({nx:p[0],ny:p[1],idx:i,col:isGuide?0:Math.floor(rnd()*3),done:false}));
+  const noiseN=isGuide?3:6+idx*3;
+  for(let k=0;k<noiseN;k++){
+    let nx,ny,ok=false,tr=0;
+    while(!ok&&tr<80){nx=.08+rnd()*.84;ny=.08+rnd()*.84;
+      ok=dots.every(d=>(d.nx-nx)**2+(d.ny-ny)**2>.006);tr++;}
+    if(ok)dots.push({nx,ny,idx:-1,col:Math.floor(rnd()*3),done:false});
+  }
+  draw={dots,next:0,n,shapeIdx:idx,timeMax:isGuide?999:CANV_TIME[idx],timeLeft:isGuide?999:CANV_TIME[idx],
+    tremor:(prog.fearDebuff?2:1),isGuide:!!isGuide,penT:0};
+  guide.drawing=!!isGuide;
+  state='draw';
+}
+function boardRect(){
+  const w=Math.min(VW*.72,760),h=Math.min(VH*.7,540);
+  return {x:(VW-w)/2,y:(VH-h)/2-20,w,h};
+}
+function drawClick(mx,my){
+  const b=boardRect(),R=16;
+  let hit=null;
+  for(const d of draw.dots){
+    if(d.done)continue;
+    const dx=b.x+d.nx*b.w,dy=b.y+d.ny*b.h;
+    if(dist2(mx,my,dx,dy)<R*R){hit=d;break;}
+  }
+  if(!hit)return;
+  if(hit.idx===draw.next){
+    hit.done=true;draw.next++;sfx.ok(draw.next);
+    if(!draw.isGuide){draw.timeLeft-=DOT_TIME_COST;draw.penT=.7;} // линия тянется — время утекает
+    if(draw.next>=draw.n)finishDraw();
+  } else {
+    if(draw.isGuide){sfx.err();return;} // guide drawing is safe
+    addError('Неверная точка.');
+  }
+}
+function addError(reason){
+  sfx.err();
+  madness.errors++;
+  if(madness.errors>madness.MAX)madness.anger++;
+  say(reason+' Лабиринт это запомнил.');
+  if(madness.errors===madness.MAX)say('Стены больше не притворяются стенами.',5);
+  if(madness.anger===1)say('Ты его разозлил.',4);
+}
+function finishDraw(){
+  sfx.door();
+  if(draw.isGuide){
+    exitDraw(true);
+    guide.used=true;
+    const tgt=prog.done<4?CANV[prog.done]:EXIT;
+    const b=bfs(...toCell(player.x,player.y));
+    guide.trail=pathTo(b.P,tgt[0],tgt[1]);guide.trailT=14;
+    say('Существо довольно. Оно показывает дорогу.');
+    return;
+  }
+  prog.done++;
+  prog.fearDebuff=false;
+  exitDraw(true);
+  say(prog.done<4?'Проход открыт. Полотно '+prog.done+'/4.':'Последнее полотно. Выход открыт — беги.',4);
+  if(prog.done<=3)armEncounter(prog.done);
+}
+function exitDraw(){state='explore';draw=null;guide.drawing=false;}
+
+// ============ encounters ============
+function armEncounter(n){
+  enc.next=n;enc.armed=true;
+  const tgt=prog.done<4?CANV[prog.done]:EXIT;
+  const b=bfs(...toCell(player.x,player.y));
+  const path=pathTo(b.P,tgt[0],tgt[1]);
+  const spot=path[Math.min(path.length-1,Math.floor(path.length*.6))];
+  enc.spot=spot;
+  monster.mode='wall';
+  monster.x=cellCX(spot[1]);monster.y=cellCY(spot[0]);
+  monster.wallSpot=spot;
+}
+function fireEncounter(){
+  enc.armed=false;
+  const n=enc.next;
+  if(n===1){
+    sfx.screech();
+    prog.fearDebuff=true;
+    say('Рисунок на стене шевельнулся. Щупальце. Руки трясутся.',5);
+    monster.mode='roam';scatterMonster();
+  } else if(n===2){
+    sfx.grab();
+    startMash('ОНО СХВАТИЛО! ЖМИ ПРОБЕЛ!',12,3,
+      ()=>{say('Вырвался. Оно уползло в стену.',4);monster.mode='roam';scatterMonster();},
+      ()=>{caught();});
+  } else if(n===3){
+    sfx.screech();
+    say('Оно вышло из стены. БЕГИ ПО ЛИНИИ.',5);
+    monster.mode='chase';monster.stun=1.2;
+    let best=SAFE[0],bd=Infinity;
+    for(const s of SAFE){const d=dist2(player.x,player.y,cellCX(s[1]),cellCY(s[0]));
+      if(d>CELL*CELL*9&&d<bd){bd=d;best=s;}}
+    if(bd===Infinity)best=SAFE[1];
+    chase={safe:best};
+  }
+}
+function scatterMonster(){
+  let best=null,bd=-1;
+  for(const[r,c]of floors){const dd=dist2(cellCX(c),cellCY(r),player.x,player.y);if(dd>bd){bd=dd;best=[r,c];}}
+  monster.x=cellCX(best[1]);monster.y=cellCY(best[0]);
+}
+function startMash(label,need,time,onWin,onFail){
+  mash={label,need,count:0,timeLeft:time,onWin,onFail};
+  state='mash';
+}
+function caught(){
+  prog.deaths++;
+  state='caught';caughtT=1.4;
+  sfx.screech();
+  if(monster.mode==='chase'){monster.mode='roam';chase=null;scatterMonster();}
+  else {monster.mode='roam';scatterMonster();}
+}
+function respawn(){
+  let best=SAFE[0],bd=Infinity;
+  for(const s of SAFE){const d=dist2(player.x,player.y,cellCX(s[1]),cellCY(s[0]));if(d<bd){bd=d;best=s;}}
+  player.x=cellCX(best[1]);player.y=cellCY(best[0]);
+  player.invuln=3;state='explore';
+  say('Ты очнулся в безопасной комнате. Оно где-то рядом.',4);
+}
+
+// ============ movement / world update ============
+function movePlayer(dt){
+  let vx=0,vy=0;
+  if(keys['KeyW']||keys['ArrowUp'])vy-=1;
+  if(keys['KeyS']||keys['ArrowDown'])vy+=1;
+  if(keys['KeyA']||keys['ArrowLeft'])vx-=1;
+  if(keys['KeyD']||keys['ArrowRight'])vx+=1;
+  if(vx||vy){
+    const l=Math.hypot(vx,vy);vx/=l;vy/=l;
+    const sp=player.speed*dt;
+    tryMove(vx*sp,0);tryMove(0,vy*sp);
+    player.stepT-=dt;
+    if(player.stepT<=0){player.stepT=.34;sfx.step();}
+  }
+}
+function collides(x,y){
+  const r=player.r;
+  for(const [ox,oy] of [[-r,-r],[r,-r],[-r,r],[r,r],[0,-r],[0,r],[-r,0],[r,0]]){
+    const [cr,cc]=toCell(x+ox,y+oy);
+    if(isWall(cr,cc))return true;
+  }
+  return false;
+}
+function tryMove(dx,dy){
+  if(!collides(player.x+dx,player.y+dy)){player.x+=dx;player.y+=dy;player.wallTouch=Math.max(0,player.wallTouch-0.016);}
+  else player.wallTouch+=0.016;
+}
+
+function updMonster(dt){
+  if(monster.mode==='gone')return;
+  if(monster.stun>0){monster.stun-=dt;return;}
+  if(monster.mode==='wall')return; // waits camouflaged
+  const freeMode = mStage()>=3;
+  if(monster.mode==='chase'||freeMode&&monster.mode==='roam'&&madness.anger>0){
+    monster.pathT-=dt;
+    if(monster.pathT<=0){
+      monster.pathT=.45;
+      const [mr,mc]=toCell(monster.x,monster.y);
+      const b=bfs(mr,mc,7); // can cut through walls at cost
+      const [pr,pc]=toCell(player.x,player.y);
+      monster.path=pathTo(b.P,pr,pc);
+    }
+    const sp=(monster.mode==='chase'?146:110)+madness.anger*8;
+    followPath(sp*dt);
+  } else { // roam
+    if(!monster.target||dist2(monster.x,monster.y,monster.target[0],monster.target[1])<16){
+      const [mr,mc]=toCell(monster.x,monster.y);
+      const opts=[[0,1],[0,-1],[1,0],[-1,0]].map(([a,b])=>[mr+a,mc+b]).filter(([r,c])=>!isWall(r,c));
+      if(opts.length){const t=opts[Math.floor(rnd()*opts.length)];monster.target=[cellCX(t[1]),cellCY(t[0])];}
+    }
+    if(monster.target){
+      const dx=monster.target[0]-monster.x,dy=monster.target[1]-monster.y,l=Math.hypot(dx,dy)||1;
+      const sp=(90+madness.anger*10)*dt;
+      monster.x+=dx/l*sp;monster.y+=dy/l*sp;
+    }
+  }
+  // catch check
+  if(player.invuln<=0&&state==='explore'){
+    const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+    if(monster.mode==='chase'&&d<26){
+      sfx.grab();
+      startMash('ЖМИ ПРОБЕЛ! ВЫРЫВАЙСЯ!',12,3,
+        ()=>{monster.stun=2.2;player.invuln=2;say('Вырвался! Беги!');},
+        ()=>caught());
+    } else if(monster.mode==='roam'&&mStage()>=3&&d<24){
+      caught();
+    }
+  }
+}
+function followPath(step){
+  while(step>0&&monster.path&&monster.path.length){
+    const [r,c]=monster.path[0];
+    const tx=cellCX(c),ty=cellCY(r);
+    const dx=tx-monster.x,dy=ty-monster.y,l=Math.hypot(dx,dy);
+    if(l<2){monster.path.shift();continue;}
+    const m=Math.min(step,l);
+    monster.x+=dx/l*m;monster.y+=dy/l*m;step-=m;
+  }
+}
+
+function updExplore(dt){
+  movePlayer(dt);
+  updMonster(dt);
+  if(player.invuln>0)player.invuln-=dt;
+  if(!flash.charged){flash.cd-=dt;if(flash.cd<=0){flash.charged=true;say('Палочка снова полна света.');}}
+
+  // canvases interact
+  if(prog.done<4){
+    const t=CANV[prog.done];
+    const nearC=dist2(player.x,player.y,cellCX(t[1]),cellCY(t[0]))<(CELL*.9)**2;
+    if(nearC&&canvasArm)startDraw(prog.done,false);
+    if(!nearC)canvasArm=true;
+  }
+  // guide
+  if(!guide.used&&dist2(player.x,player.y,cellCX(GUIDE[1]),cellCY(GUIDE[0]))<(CELL*.9)**2)startDraw(0,true);
+  if(guide.trailT>0)guide.trailT-=dt;
+
+  // armed encounter trigger
+  if(enc.armed&&monster.wallSpot){
+    if(dist2(player.x,player.y,cellCX(monster.wallSpot[1]),cellCY(monster.wallSpot[0]))<(CELL*1.6)**2)fireEncounter();
+  }
+  // chase resolve at safe room
+  if(monster.mode==='chase'&&chase){
+    const s=chase.safe;
+    if(dist2(player.x,player.y,cellCX(s[1]),cellCY(s[0]))<(CELL*.9)**2){
+      monster.mode='roam';scatterMonster();chase=null;
+      say('Комната. Тишина. ...Слишком тихая.',4);
+      if(!ambushDone)ambushT=5;
+    }
+  }
+  // safe-room ambush
+  if(ambushT>0){
+    ambushT-=dt;
+    if(ambushT<=0&&!ambushDone){
+      ambushDone=true;sfx.grab();
+      startMash('СТЕНА ТРЕСНУЛА! ЖМИ ПРОБЕЛ!',12,3,
+        ()=>{say('Щупальце ушло обратно в пролом.',4);},
+        ()=>caught());
+    }
+  }
+  // living walls grab at stage>=2
+  if(mStage()>=2&&player.wallTouch>1.6&&player.invuln<=0){
+    player.wallTouch=0;sfx.grab();
+    startMash('СТЕНА ЖИВАЯ! ЖМИ ПРОБЕЛ!',10,3,
+      ()=>{player.invuln=2;say('Стена отпустила. Не прижимайся к ним.',4);},
+      ()=>caught());
+  }
+  // exit
+  if(prog.done>=4&&dist2(player.x,player.y,cellCX(EXIT[1]),cellCY(EXIT[0]))<(CELL*.9)**2)win();
+
+  // monster audio
+  const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+  sndSkitT-=dt;
+  if(sndSkitT<=0&&monster.mode!=='gone'){
+    const g=clamp(1-d/(CELL*10),0,1);
+    if(g>0.02)sfx.skitter(g);
+    sndSkitT=.5+rnd()*1.2-madness.anger*.05;
+  }
+  sndHeartT-=dt;
+  if(sndHeartT<=0&&d<CELL*5){sfx.heart(clamp(1-d/(CELL*5),0,1)*.5);sndHeartT=clamp(d/(CELL*5),.3,1)*1.1;}
+}
+
+function updDraw(dt){
+  if(draw.penT>0)draw.penT-=dt;
+  if(!draw.isGuide){
+    draw.timeLeft-=dt;
+    if(draw.timeLeft<10&&Math.floor(draw.timeLeft*2)!==Math.floor((draw.timeLeft+dt)*2))sfx.tick();
+    if(draw.timeLeft<=0){
+      addError('Время вышло.');
+      startDraw(draw.shapeIdx,false); // reshuffle same canvas
+      return;
+    }
+  }
+  const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+  sndSkitT-=dt;
+  if(sndSkitT<=0&&monster.mode!=='gone'){
+    sfx.skitter(clamp(1-d/(CELL*14),0.06,1));
+    sndSkitT=.35+rnd()*.9;
+  }
+  updMonster(dt*.5); // world half-speed behind the canvas
+}
+
+function updMash(dt){
+  mash.timeLeft-=dt;
+  if(mash.count>=mash.need){const f=mash.onWin;mash=null;state='explore';f();}
+  else if(mash.timeLeft<=0){const f=mash.onFail;mash=null;f();}
+}
+
+function win(){
+  state='win';
+  const t=Math.round(tGlobal-prog.startTime);
+  document.getElementById('winStats').textContent=
+    'Время: '+Math.floor(t/60)+' мин '+(t%60)+' сек · Ошибки: '+madness.errors+' · Поимки: '+prog.deaths;
+  document.getElementById('winOv').classList.remove('hidden');
+}
+
+// ============ render ============
+function worldToScreen(x,y){return [x-cam.x+VW/2,y-cam.y+VH/2];}
+const cam={x:player.x,y:player.y};
+
+function render(){
+  const st=mStage();
+  ctx.clearRect(0,0,VW,VH);
+  ctx.fillStyle='#050508';ctx.fillRect(0,0,VW,VH);
+  cam.x+=(player.x-cam.x)*.12;cam.y+=(player.y-cam.y)*.12;
+  const shx=st>=1?jit(st*1.6):0,shy=st>=1?jit(st*1.6):0;
+  ctx.save();ctx.translate(shx,shy);
+
+  // walls as ink lines
+  const wob=st>=2?2.5+st:0;
+  ctx.strokeStyle=st>=3?'rgba(200,196,184,.5)':'rgba(200,196,184,.65)';
+  ctx.lineWidth=1.4;
+  ctx.beginPath();
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    if(grid[r][c]!==1)continue;
+    const x=c*CELL,y=r*CELL;
+    const [sx,sy]=worldToScreen(x,y);
+    if(sx<-CELL||sy<-CELL||sx>VW+CELL||sy>VH+CELL)continue;
+    const w=v=>v+ (wob?jit(wob):0);
+    if(!isWall(r-1,c)){ctx.moveTo(w(sx),w(sy));ctx.lineTo(w(sx+CELL),w(sy));}
+    if(!isWall(r+1,c)){ctx.moveTo(w(sx),w(sy+CELL));ctx.lineTo(w(sx+CELL),w(sy+CELL));}
+    if(!isWall(r,c-1)){ctx.moveTo(w(sx),w(sy));ctx.lineTo(w(sx),w(sy+CELL));}
+    if(!isWall(r,c+1)){ctx.moveTo(w(sx+CELL),w(sy));ctx.lineTo(w(sx+CELL),w(sy+CELL));}
+  }
+  ctx.stroke();
+  // stage3: walls become dot-mass
+  if(st>=3){
+    ctx.fillStyle='rgba(20,20,26,.9)';
+    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+      if(grid[r][c]!==1)continue;
+      const [sx,sy]=worldToScreen(c*CELL,r*CELL);
+      if(sx<-CELL||sy<-CELL||sx>VW+CELL||sy>VH+CELL)continue;
+      for(let k=0;k<3;k++){ctx.beginPath();ctx.arc(sx+rnd()*CELL,sy+rnd()*CELL,2.2,0,7);ctx.fill();}
+    }
+  }
+
+  // guide trail
+  if(guide.trail&&guide.trailT>0){
+    ctx.strokeStyle='rgba(79,216,255,.5)';ctx.lineWidth=2;ctx.setLineDash([6,8]);
+    ctx.beginPath();
+    guide.trail.forEach(([r,c],i)=>{const[sx,sy]=worldToScreen(cellCX(c),cellCY(r));i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
+    ctx.stroke();ctx.setLineDash([]);
+  }
+  // chase safe line
+  if(monster.mode==='chase'&&chase){
+    const b=bfs(...toCell(player.x,player.y));
+    const p=pathTo(b.P,chase.safe[0],chase.safe[1]);
+    ctx.strokeStyle='rgba(57,255,158,.8)';ctx.lineWidth=2.5;
+    ctx.beginPath();
+    p.forEach(([r,c],i)=>{const[sx,sy]=worldToScreen(cellCX(c),cellCY(r));i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
+    ctx.stroke();
+  }
+
+  // features
+  const pulse=1+Math.sin(tGlobal*4)*.2;
+  // safe rooms
+  for(const s of SAFE){
+    const [sx,sy]=worldToScreen(cellCX(s[1]),cellCY(s[0]));
+    ctx.strokeStyle='rgba(79,216,255,.5)';ctx.lineWidth=1;
+    ctx.strokeRect(sx-CELL*.42,sy-CELL*.42,CELL*.84,CELL*.84);
+  }
+  // canvases
+  for(let i=0;i<4;i++){
+    const t=CANV[i];const [sx,sy]=worldToScreen(cellCX(t[1]),cellCY(t[0]));
+    if(i<prog.done){ctx.fillStyle='rgba(57,255,158,.25)';ctx.beginPath();ctx.arc(sx,sy,5,0,7);ctx.fill();}
+    else if(i===prog.done){
+      ctx.fillStyle='rgba(57,255,158,.95)';
+      for(let k=0;k<5;k++){ctx.beginPath();ctx.arc(sx+Math.cos(k*1.256+tGlobal)*10,sy+Math.sin(k*1.256+tGlobal)*10,2.6*pulse,0,7);ctx.fill();}
+    } else {ctx.fillStyle='rgba(57,255,158,.15)';ctx.beginPath();ctx.arc(sx,sy,4,0,7);ctx.fill();}
+  }
+  // guide creature
+  if(!guide.used){
+    const [sx,sy]=worldToScreen(cellCX(GUIDE[1]),cellCY(GUIDE[0]));
+    ctx.fillStyle='rgba(79,216,255,.85)';
+    for(let k=0;k<4;k++){ctx.beginPath();ctx.arc(sx+Math.cos(k*1.57+tGlobal*1.5)*8,sy+Math.sin(k*1.57+tGlobal*1.5)*8,2.4,0,7);ctx.fill();}
+  }
+  // exit
+  {
+    const [sx,sy]=worldToScreen(cellCX(EXIT[1]),cellCY(EXIT[0]));
+    ctx.strokeStyle=prog.done>=4?'rgba(57,255,158,'+(.6+Math.sin(tGlobal*5)*.3)+')':'rgba(200,196,184,.25)';
+    ctx.lineWidth=2;ctx.beginPath();ctx.arc(sx,sy,CELL*.36,0,7);ctx.stroke();
+  }
+
+  // monster
+  if(monster.mode!=='gone'){
+    const [mx,my]=worldToScreen(monster.x,monster.y);
+    if(mx>-80&&my>-80&&mx<VW+80&&my<VH+80){
+      const flat=monster.mode==='wall';
+      const N=flat?18:34;
+      ctx.fillStyle=flat?'rgba(15,15,20,.85)':'rgba(8,8,10,.95)';
+      const pts=[];
+      for(let k=0;k<N;k++){
+        const a=k*2.399+tGlobal*(flat?.3:1.2);
+        const rr=(flat?14:20)+((k*37)%17)+(flat?jit(1):jit(4));
+        const px=mx+Math.cos(a)*rr,py=my+Math.sin(a)*rr*(flat?.5:.8);
+        pts.push([px,py]);
+        ctx.beginPath();ctx.arc(px,py,flat?2:2.6,0,7);ctx.fill();
+      }
+      ctx.strokeStyle='rgba(30,30,40,.5)';ctx.lineWidth=.6;
+      ctx.beginPath();
+      for(let k=0;k<pts.length-1;k+=2){ctx.moveTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[k+1][0],pts[k+1][1]);}
+      ctx.stroke();
+      if(!flat||Math.sin(tGlobal*2)>0.7){
+        ctx.fillStyle='rgba(210,40,40,.9)';
+        ctx.beginPath();ctx.arc(mx-6,my-2,2.6,0,7);ctx.fill();
+        ctx.beginPath();ctx.arc(mx+7,my,2.6,0,7);ctx.fill();
+      }
+    }
+  }
+
+  // player
+  {
+    const [px,py]=worldToScreen(player.x,player.y);
+    ctx.strokeStyle=player.invuln>0&&Math.sin(tGlobal*20)>0?'rgba(184,255,217,.3)':'rgba(184,255,217,.95)';
+    ctx.lineWidth=1.6;
+    ctx.beginPath();ctx.arc(px,py,player.r,0,7);ctx.stroke();
+    const ang=Math.atan2(mouse.y-py,mouse.x-px);
+    ctx.beginPath();ctx.moveTo(px,py);
+    ctx.lineTo(px+Math.cos(ang)*18,py+Math.sin(ang)*18);
+    ctx.stroke();
+    const dim=flash.charged?1:.5;
+    ctx.fillStyle='rgba(255,240,180,'+(.9*dim)+')';
+    ctx.beginPath();ctx.arc(px+Math.cos(ang)*18,py+Math.sin(ang)*18,2.5,0,7);ctx.fill();
+  }
+
+  ctx.restore();
+
+  // darkness with flashlight
+  if(state==='explore'||state==='mash'||state==='caught'){
+    dctx.globalCompositeOperation='source-over';
+    dctx.fillStyle='rgba(2,2,4,.965)';
+    dctx.fillRect(0,0,VW,VH);
+    const [px,py]=worldToScreen(player.x,player.y);
+    const dim=flash.charged?1:.5;
+    dctx.globalCompositeOperation='destination-out';
+    let g=dctx.createRadialGradient(px,py,0,px,py,85*dim);
+    g.addColorStop(0,'rgba(0,0,0,1)');g.addColorStop(1,'rgba(0,0,0,0)');
+    dctx.fillStyle=g;dctx.beginPath();dctx.arc(px,py,85*dim,0,7);dctx.fill();
+    const ang=Math.atan2(mouse.y-py,mouse.x-px),CR=290*dim;
+    g=dctx.createRadialGradient(px,py,20,px,py,CR);
+    g.addColorStop(0,'rgba(0,0,0,.95)');g.addColorStop(1,'rgba(0,0,0,0)');
+    dctx.fillStyle=g;
+    dctx.beginPath();dctx.moveTo(px,py);
+    dctx.arc(px,py,CR,ang-.45,ang+.45);dctx.closePath();dctx.fill();
+    ctx.drawImage(dk,0,0,VW,VH);
+  }
+
+  // stage>=2 eyes at screen edges
+  if(st>=2&&state==='explore'){
+    if(eyes.length<4&&rnd()<.01)eyes.push({x:rnd()<.5?20+rnd()*60:VW-20-rnd()*60,y:60+rnd()*(VH-120),life:3+rnd()*3});
+    ctx.fillStyle='rgba(200,40,40,.75)';
+    eyes.forEach(e=>{e.life-=1/60;
+      ctx.beginPath();ctx.arc(e.x,e.y,2.2,0,7);ctx.fill();
+      ctx.beginPath();ctx.arc(e.x+8,e.y+1,2.2,0,7);ctx.fill();});
+    eyes=eyes.filter(e=>e.life>0);
+  }
+  // stage>=1 flicker
+  if(st>=1&&rnd()<.03){ctx.fillStyle='rgba(57,255,158,.03)';ctx.fillRect(0,0,VW,VH);}
+
+  if(state==='draw')renderDraw();
+  if(state==='mash')renderMash();
+  if(state==='caught')renderCaught();
+  renderHUD();
+}
+
+function renderDraw(){
+  ctx.fillStyle='rgba(3,3,6,.88)';ctx.fillRect(0,0,VW,VH);
+  const b=boardRect();
+  ctx.strokeStyle='rgba(200,196,184,.4)';ctx.lineWidth=1;
+  ctx.strokeRect(b.x,b.y,b.w,b.h);
+  const fear=clamp(( draw.isGuide?0:(1-draw.timeLeft/draw.timeMax)*.8+mStage()*.15 ),0,1)*draw.tremor;
+  const amp=fear*5;
+  // done path
+  const done=draw.dots.filter(d=>d.idx>=0&&d.done).sort((a,c)=>a.idx-c.idx);
+  if(done.length){
+    ctx.strokeStyle='rgba(57,255,158,.85)';ctx.lineWidth=2;
+    ctx.beginPath();
+    done.forEach((d,i)=>{
+      const x=b.x+d.nx*b.w+jit(amp*.4),y=b.y+d.ny*b.h+jit(amp*.4);
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    });
+    const lx=b.x+done[done.length-1].nx*b.w,ly=b.y+done[done.length-1].ny*b.h;
+    const steps=6;
+    for(let i=1;i<=steps;i++){
+      ctx.lineTo(lx+(mouse.x-lx)*i/steps+jit(amp*2.6),ly+(mouse.y-ly)*i/steps+jit(amp*2.6));
+    }
+    ctx.stroke();
+  }
+  // dots
+  for(const d of draw.dots){
+    const x=b.x+d.nx*b.w+jit(amp*.4),y=b.y+d.ny*b.h+jit(amp*.4);
+    const col=PALETTE[d.col];
+    ctx.fillStyle=d.done?'#39FF9E':col;
+    ctx.globalAlpha=d.done?1:(d.idx>=0?.95:.8);
+    ctx.beginPath();ctx.arc(x,y,d.done?5:4,0,7);ctx.fill();
+    ctx.globalAlpha=1;
+    if(d.idx>=0&&!d.done){
+      ctx.fillStyle='rgba(200,220,210,.3)';
+      ctx.font='10px "Courier New",monospace';
+      ctx.fillText(String(d.idx+1),x+7,y+11);
+    }
+  }
+  // color order strip
+  if(!draw.isGuide){
+    const n=draw.n,sw=22,total=n*(sw+8);
+    let x0=(VW-total)/2,y0=b.y+b.h+26;
+    ctx.font='11px "Courier New",monospace';
+    ctx.fillStyle='rgba(122,168,143,.8)';
+    ctx.fillText('ПОРЯДОК:',x0-84,y0+14);
+    for(let i=0;i<n;i++){
+      const real=draw.dots.find(d=>d.idx===i);
+      ctx.fillStyle=PALETTE[real.col];
+      ctx.globalAlpha=i<draw.next?.25:1;
+      ctx.fillRect(x0+i*(sw+8),y0,sw,sw);
+      ctx.globalAlpha=1;
+      if(i===draw.next){ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.strokeRect(x0+i*(sw+8)-2,y0-2,sw+4,sw+4);}
+    }
+    // timer
+    const tw=b.w,frac=clamp(draw.timeLeft/draw.timeMax,0,1);
+    ctx.fillStyle='#14141c';ctx.fillRect(b.x,b.y-16,tw,6);
+    ctx.fillStyle=frac>.35?'#39FF9E':'#e0503c';ctx.fillRect(b.x,b.y-16,tw*frac,6);
+    // «кусок», отгрызенный последней точкой
+    if(draw.penT>0){
+      const p=draw.penT/.7,bite=tw*(DOT_TIME_COST/draw.timeMax);
+      ctx.fillStyle='rgba(224,80,60,'+p+')';
+      ctx.fillRect(b.x+tw*frac,b.y-16,bite,6);
+      ctx.fillStyle='rgba(224,80,60,'+p+')';
+      ctx.font='12px "Courier New",monospace';ctx.textAlign='right';
+      ctx.fillText('−'+DOT_TIME_COST+' с',b.x+tw,b.y-24-(1-p)*8);
+      ctx.textAlign='left';
+    }
+  } else {
+    ctx.fillStyle='rgba(79,216,255,.8)';ctx.font='13px "Courier New",monospace';
+    ctx.textAlign='center';
+    ctx.fillText('Существо просит закончить его рисунок. Ошибки здесь не считаются.',VW/2,b.y+b.h+30);
+    ctx.textAlign='left';
+  }
+}
+function renderMash(){
+  ctx.fillStyle='rgba(20,3,3,.55)';ctx.fillRect(0,0,VW,VH);
+  ctx.fillStyle='#ff6b5a';ctx.font='26px "Courier New",monospace';ctx.textAlign='center';
+  ctx.fillText(mash.label,VW/2,VH/2-40+jit(4));
+  const w=300,frac=clamp(mash.count/mash.need,0,1);
+  ctx.strokeStyle='#ff6b5a';ctx.strokeRect(VW/2-w/2,VH/2,w,18);
+  ctx.fillRect(VW/2-w/2,VH/2,w*frac,18);
+  ctx.textAlign='left';
+}
+function renderCaught(){
+  ctx.fillStyle='rgba(0,0,0,'+clamp(1-caughtT/1.4,0,1)*0.9+')';
+  ctx.fillRect(0,0,VW,VH);
+  ctx.fillStyle='rgba(210,40,40,.9)';
+  ctx.beginPath();ctx.arc(VW/2-16,VH/2,5,0,7);ctx.fill();
+  ctx.beginPath();ctx.arc(VW/2+16,VH/2,5,0,7);ctx.fill();
+}
+function renderHUD(){
+  if(state==='start'||state==='win')return;
+  ctx.font='12px "Courier New",monospace';
+  // objective
+  ctx.fillStyle='rgba(122,168,143,.9)';
+  const obj=prog.done<4?'ПОЛОТНО '+(prog.done+1)+'/4':'НАЙДИ ВЫХОД';
+  ctx.fillText(obj,16,24);
+  // madness pips
+  for(let i=0;i<madness.MAX;i++){
+    ctx.fillStyle=i<madness.errors?'#e0503c':'#1d1d26';
+    ctx.beginPath();ctx.arc(16+i*16,44,4.5,0,7);ctx.fill();
+  }
+  if(madness.anger>0){ctx.fillStyle='#e0503c';ctx.fillText('ЯРОСТЬ +'+madness.anger,16+madness.MAX*16+8,48);}
+  // flash
+  ctx.fillStyle=flash.charged?'#ffe9a8':'#4a4436';
+  ctx.fillText(flash.charged?'ВСПЫШКА ГОТОВА [ПРОБЕЛ]':'ПЕРЕЗАРЯДКА '+Math.ceil(flash.cd)+'с',16,68);
+  // message
+  if(msgT>0){
+    ctx.fillStyle='rgba(184,255,217,'+clamp(msgT,0,1)+')';
+    ctx.font='14px "Courier New",monospace';ctx.textAlign='center';
+    ctx.fillText(msg,VW/2,VH-36);
+    ctx.textAlign='left';
+  }
+}
+
+// ============ main loop ============
+function loop(t){
+  requestAnimationFrame(loop);
+  const dt=Math.min(.05,(t-lastT)/1000||0);lastT=t;tGlobal+=dt;
+  if(msgT>0)msgT-=dt;
+  if(state==='explore')updExplore(dt);
+  else if(state==='draw')updDraw(dt);
+  else if(state==='mash')updMash(dt);
+  else if(state==='caught'){caughtT-=dt;if(caughtT<=0)respawn();}
+  render();
+}
+requestAnimationFrame(loop);
+
+// ============ buttons ============
+document.getElementById('startBtn').onclick=()=>{
+  initAudio();AC.resume&&AC.resume();
+  document.getElementById('startOv').classList.add('hidden');
+  prog.startTime=tGlobal;
+  state='explore';
+  say('Найди первое полотно. Зелёные точки укажут путь.',5);
+};
+document.getElementById('againBtn').onclick=()=>location.reload();
+})();
+</script>
+</body>
+</html>

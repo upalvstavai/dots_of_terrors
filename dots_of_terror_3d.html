@@ -1,0 +1,3165 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dots of Terror — 3D, от первого лица</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#050508; }
+  body { font-family:"Courier New",monospace; color:#b8ffd9; }
+  canvas { display:block; width:100%; height:100%; cursor:none; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:16px; background:rgba(5,5,8,.94); z-index:10; text-align:center; padding:24px; cursor:default; }
+  .overlay h1 { font-size:26px; letter-spacing:6px; color:#39FF9E; font-weight:normal; }
+  .overlay p { font-size:13px; line-height:1.75; max-width:600px; color:#7aa88f; }
+  .overlay .warn { color:#e0503c; }
+  .overlay .dev { color:#9a7ad8; }
+  .overlay button { background:none; border:1px solid #39FF9E; color:#39FF9E; font-family:inherit; font-size:15px;
+    letter-spacing:3px; padding:11px 34px; cursor:pointer; }
+  .overlay button:hover { background:#39FF9E; color:#050508; }
+  .hidden { display:none !important; }
+  kbd { border:1px solid #2f5a45; padding:1px 6px; border-radius:3px; color:#9fe6c4; font-family:inherit; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div id="startOv" class="overlay">
+  <h1>DOTS OF TERROR!</h1>
+  <p style="color:#4d7a63">3D · от первого лица · чернильный каркас · только для ПК</p>
+  <p>
+    Ты просыпаешься в полной темноте. <b>Обернись — на столе позади лежит палочка.</b><br>
+    Без неё нет света.<br>
+    Найди шесть полотен, соедини точки — и доберись до выхода.<br><br>
+    <kbd>W A S D</kbd> — движение<br>
+    <b>Камера: зажми тачпад и веди.</b> Это работает всегда.<br>
+    Один щелчок по игре — свободный обзор без зажатия, если браузер разрешит.<br>
+    <kbd>←</kbd> <kbd>→</kbd> — поворот с клавиатуры, с <kbd>SHIFT</kbd> вдвое быстрее<br>
+    <kbd>-</kbd> <kbd>=</kbd> — чувствительность камеры слабее / сильнее<br>
+    <kbd>Q</kbd> — <b>рывком развернуться кругом</b>, когда оно за спиной<br>
+    <kbd>ПРОБЕЛ</kbd> — вспышка палочки / вырываться из хватки<br>
+    <kbd>ESC</kbd> — отпустить мышь (на полотне — выйти)<br><br>
+    На полотне курсор снова обычный — тыкай точки тачпадом как везде.<br>
+    Соединяй их по порядку цветов внизу.<br>
+    Одинаковых цветов несколько — ищи слабые номерки.<br>
+    Каждая соединённая точка съедает 2 секунды таймера.<br><br>
+    <span class="warn">Каждая ошибка и каждая поимка навсегда делают лабиринт хуже.<br>
+    Слушай, с какой стороны оно скребёт. Играй в наушниках.</span><br><br>
+    Палочка помечает пол там, где ты уже был.<br>
+    <kbd>E</kbd> — прочитать книжку на столе. Столы стоят в тупиках.<br>
+    <span class="warn">Три поимки подряд — и всё сначала. Серия сбрасывается сданным полотном.</span><br>
+    Последнее полотно откроет выход — и сорвёт его с цепи.<br><br>
+    <span class="dev hidden" id="devHint">ДЛЯ СОЗДАТЕЛЯ: <kbd>G</kbd> — нить к цели, <kbd>M</kbd> — линия к монстру.</span>
+  </p>
+  <button id="startBtn">ПРОСНУТЬСЯ</button>
+  <p id="bootErr" class="warn hidden"></p>
+</div>
+
+<div id="overOv" class="overlay hidden">
+  <h1 style="color:#e0503c">ОНО ЗАБРАЛО ТЕБЯ</h1>
+  <p id="overStats"></p>
+  <p style="color:#4d7a63">Три раза подряд — и лабиринт не отпускает.<br>Всё сначала.</p>
+  <button id="overBtn">СНОВА</button>
+</div>
+
+<div id="winOv" class="overlay hidden">
+  <h1>ТЫ ВЫБРАЛСЯ</h1>
+  <p id="winStats"></p>
+  <p style="color:#4d7a63">Дверь ты нарисовал сам. Как и всё остальное здесь.</p>
+  <button id="againBtn">ЕЩЁ РАЗ</button>
+</div>
+
+<script>
+// Диагностика загрузки. Обработчик кнопки навешивается ПОСЛЕДНЕЙ строкой большого скрипта,
+// поэтому любая ошибка выше оставляет кнопку мёртвой при живом стартовом экране.
+// Раньше это выглядело как «игра не запускается» и молчало. Теперь ошибка видна прямо на экране.
+window.addEventListener('error',function(e){
+  var d=document.getElementById('bootErr');
+  if(!d)return;
+  d.classList.remove('hidden');
+  d.textContent='СКРИПТ УПАЛ: '+(e.message||'неизвестно')+
+    (e.lineno?('  (строка '+e.lineno+')'):'')+'  — покажи эту строку.';
+});
+</script>
+
+<script>
+(() => {
+"use strict";
+// ============ utils ============
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+// Лабиринт генерится по сиду, и сид теперь свой на каждый забег (см. buildWorld).
+// Раньше он был прибит гвоздём — карта одна и та же всегда.
+let worldSeed=20260825;
+let rng = mulberry32(worldSeed);
+const rnd = () => Math.random();
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const dist2=(x1,y1,x2,y2)=>{const dx=x1-x2,dy=y1-y2;return dx*dx+dy*dy;};
+const jit=a=>(rnd()-0.5)*a;
+
+// ============ canvas ============
+// ============================================================================
+// ПОДСКАЗКИ СОЗДАТЕЛЯ — переключаются клавишей ` (или F9) прямо в игре и запоминаются
+// в браузере. Файл при этом один и тот же для всех.
+// По умолчанию ВЫКЛЮЧЕНЫ. Это главное: раньше режим стоял константой в коде, и чтобы
+// отдать игру человеку, надо было не забыть поправить одно слово. Забыл — и он проходит
+// лабиринт по светящейся линии к выходу, то есть не играет вовсе.
+// Теперь забыть нечего: у того, кто F9 не нажимал, подсказок нет.
+let DEV=false;
+try{ DEV=localStorage.getItem('dot_dev')==='1'; }catch(e){}   // file:// иногда запрещает хранилище
+function setDev(on,announce){
+  DEV=!!on;
+  try{ localStorage.setItem('dot_dev',DEV?'1':'0'); }catch(e){}
+  const h=document.getElementById('devHint');
+  if(h)h.classList[DEV?'remove':'add']('hidden');
+  // Линии гасим/зажигаем сразу, иначе выключенный режим оставил бы их висеть на экране
+  thread.on=DEV;monLine.on=DEV;
+  if(announce)say(DEV?'Режим создателя: ВКЛ (G — нить, M — монстр)':'Режим создателя: ВЫКЛ',3);
+}
+// ============================================================================
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+let VW=0,VH=0,DPR=Math.min(window.devicePixelRatio||1,2);
+let FOCAL=600;
+const FOV=75*Math.PI/180;
+function resize(){
+  VW=innerWidth;VH=innerHeight;cv.width=VW*DPR;cv.height=VH*DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  FOCAL=(VW/2)/Math.tan(FOV/2);
+}
+addEventListener('resize',resize);resize();
+
+// ============ audio ============
+let AC=null,MG=null,DUCK=null,COMP=null,DRONE=null,DRONE_OSC=[];
+function initAudio(){
+  if(AC)return;
+  AC=new (window.AudioContext||window.webkitAudioContext)();
+  MG=AC.createGain();MG.gain.value=.9;
+  DUCK=AC.createGain();DUCK.gain.value=1;          // общий «провал тишины» перед пугалками
+  // Компрессор обязателен: скример — это резкий скачок громкости, а без него
+  // Web Audio уходит в клиппинг, и удар звучит как треск в колонках, то есть как баг.
+  COMP=AC.createDynamicsCompressor();
+  COMP.threshold.value=-20;COMP.knee.value=14;COMP.ratio.value=9;
+  COMP.attack.value=.003;COMP.release.value=.28;
+  MG.connect(DUCK);DUCK.connect(COMP);COMP.connect(AC.destination);
+  const o1=AC.createOscillator(),o2=AC.createOscillator(),g=AC.createGain();
+  o1.type='sine';o1.frequency.value=46;o2.type='sine';o2.frequency.value=49.5;
+  g.gain.value=.03;o1.connect(g);o2.connect(g);g.connect(MG);o1.start();o2.start();
+  DRONE=g;DRONE_OSC=[o1,o2];
+}
+// Дрон — это два бесконечных осциллятора. Браузер ОБЯЗАН убить AudioContext вместе
+// со страницей, но если окно закрыли, а процесс браузера остался жив, аудиоустройство
+// продолжает держаться и гудеть. Поэтому глушим сами, явно и на всех событиях ухода.
+function stopAudio(){
+  if(!AC)return;
+  for(const o of DRONE_OSC){ try{o.stop();}catch(e){} try{o.disconnect();}catch(e){} }
+  try{ if(DRONE)DRONE.disconnect(); }catch(e){}
+  try{ if(MG)MG.disconnect(); }catch(e){}
+  try{ if(DUCK)DUCK.disconnect(); }catch(e){}
+  try{ if(COMP)COMP.disconnect(); }catch(e){}
+  try{ AC.close(); }catch(e){}
+  AC=null;MG=null;DUCK=null;COMP=null;DRONE=null;DRONE_OSC=[];
+}
+// pagehide срабатывает и при закрытии вкладки, и при уходе страницы в bfcache —
+// это надёжнее, чем beforeunload, но вешаем оба.
+addEventListener('pagehide',stopAudio);
+addEventListener('beforeunload',stopAudio);
+addEventListener('unload',stopAudio);
+// И не гудим в фоне, когда игрок просто ушёл на другую вкладку
+document.addEventListener('visibilitychange',function(){
+  if(!AC)return;
+  if(document.hidden){ if(AC.suspend)AC.suspend(); }
+  else if(state!=='start'&&AC.resume)AC.resume();
+});
+// Провал громкости на dur секунд — тишина перед ударом пугает сильнее самого удара.
+function duckAudio(dur){
+  if(!DUCK)return;
+  const t=AC.currentTime;
+  DUCK.gain.cancelScheduledValues(t);
+  DUCK.gain.setValueAtTime(DUCK.gain.value,t);
+  DUCK.gain.linearRampToValueAtTime(.05,t+.08);
+  DUCK.gain.setValueAtTime(.05,t+dur);
+  DUCK.gain.linearRampToValueAtTime(1,t+dur+.25);
+}
+// Мгновенный выход из провала. duckAudio возвращает громкость плавно за 0.25 с —
+// для скримера это катастрофа: под ту самую четверть секунды попадает АТАКА крика,
+// и удар приходит приглушённым, то есть впустую.
+function unduck(){
+  if(!AC||!DUCK)return;
+  const t=AC.currentTime;
+  DUCK.gain.cancelScheduledValues(t);
+  DUCK.gain.setValueAtTime(DUCK.gain.value,t);
+  DUCK.gain.linearRampToValueAtTime(1,t+.02);
+}
+function nbuf(d){const b=AC.createBuffer(1,AC.sampleRate*d,AC.sampleRate),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=rnd()*2-1;return b;}
+// pan: -1 слева, +1 справа. Без него монстра слышно, но непонятно откуда.
+function playNoise(dur,freq,vol,type,pan){
+  if(!AC)return;
+  const s=AC.createBufferSource();s.buffer=nbuf(dur);
+  const f=AC.createBiquadFilter();f.type=type||'lowpass';f.frequency.value=freq;
+  const g=AC.createGain();g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+dur);
+  s.connect(f);f.connect(g);
+  if(pan!==undefined&&AC.createStereoPanner){
+    const p=AC.createStereoPanner();p.pan.value=clamp(pan,-1,1);g.connect(p);p.connect(MG);
+  } else g.connect(MG);
+  s.start();
+}
+function tone(fr,dur,vol,type){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.type=type||'sine';o.frequency.value=fr;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+dur);
+  o.connect(g);g.connect(MG);o.start();o.stop(AC.currentTime+dur);
+}
+// Скользящая частота — основа воя. Без неё крик получается ровным гудком.
+function sweep(f0,f1,dur,vol,type){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
+  o.type=type||'sawtooth';
+  o.frequency.setValueAtTime(f0,t);
+  o.frequency.exponentialRampToValueAtTime(Math.max(20,f1),t+dur);
+  g.gain.setValueAtTime(vol,t);
+  g.gain.exponentialRampToValueAtTime(.001,t+dur);
+  o.connect(g);g.connect(MG);o.start();o.stop(t+dur);
+}
+const sfx={
+  step:()=>playNoise(.14,140,.12),
+  skitter:(v,pan)=>{playNoise(.05,2400,v*.5,'highpass',pan);
+    setTimeout(()=>AC&&playNoise(.05,2600,v*.4,'highpass',pan),70);},
+  heart:v=>{playNoise(.1,90,v);setTimeout(()=>AC&&playNoise(.09,80,v*.8),180);},
+  // дыхание игрока: вдох на страхе, выдох следом
+  breath:v=>{playNoise(.34,620,v*.30,'bandpass');
+    setTimeout(()=>AC&&playNoise(.42,430,v*.22,'bandpass'),420);},
+  ok:i=>tone(340+i*38,.12,.18),
+  err:()=>tone(210,.3,.35,'square'),
+  screech:()=>{playNoise(.9,900,.55,'bandpass');tone(66,1.2,.5,'sawtooth');},
+  flash:()=>{playNoise(.5,3000,.5,'highpass');tone(880,.4,.3);},
+  grab:()=>{tone(90,.5,.5,'sawtooth');playNoise(.4,300,.4);},
+  door:()=>{tone(520,.5,.22);tone(780,.8,.16);},
+  tick:()=>tone(1200,.04,.1,'square'),
+  whip:()=>{playNoise(.09,1600,.3,'bandpass');tone(140,.12,.18,'sawtooth');},
+  // ---- голоса скримера ----
+  scream:()=>{                       // сам удар: крик + восходящий вой + провал низа
+    playNoise(1.15,2200,.9,'bandpass');
+    playNoise(.3,180,.75);
+    sweep(150,1500,.5,.55,'sawtooth');
+    sweep(72,34,1.7,.6,'sawtooth');
+  },
+  grind:()=>{                        // скрежет камня о камень — это голос монстра
+    playNoise(1.0,520,.6,'bandpass');
+    sweep(340,90,1.0,.35,'square');
+  },
+  lunge:()=>{                        // короткий рывок в момент захвата: не крик, а бросок
+    playNoise(.55,2600,.8,'bandpass');
+    sweep(230,1700,.28,.5,'sawtooth');
+    playNoise(.22,160,.6);
+  },
+  thud:()=>{                         // тихая поимка: глухо и коротко, без крика
+    playNoise(.22,300,.3);
+    tone(52,.9,.3);
+  },
+};
+
+// ============ maze ============
+// 33×25 = 825 клеток против прежних 23×17 = 391, то есть ровно вдвое больше.
+// Числа обязаны быть нечётными: генератор лабиринта шагает через клетку от [1,1].
+const CELL=48,COLS=33,ROWS=25;
+const WALL_H=58;      // высота стен
+const EYE=34;         // высота глаз
+const NEAR=6;         // ближняя плоскость отсечения
+let grid=[]; // 1 wall, 0 floor
+function genMaze(){
+  grid=[];
+  for(let r=0;r<ROWS;r++){grid.push(new Array(COLS).fill(1));}
+  const st=[[1,1]];grid[1][1]=0;
+  while(st.length){
+    const [cr,cc]=st[st.length-1];
+    const dirs=[[0,2],[0,-2],[2,0],[-2,0]].sort(()=>rng()-.5);
+    let moved=false;
+    for(const [dr,dc] of dirs){
+      const nr=cr+dr,nc=cc+dc;
+      if(nr>0&&nr<ROWS-1&&nc>0&&nc<COLS-1&&grid[nr][nc]===1){
+        grid[cr+dr/2][cc+dc/2]=0;grid[nr][nc]=0;st.push([nr,nc]);moved=true;break;
+      }
+    }
+    if(!moved)st.pop();
+  }
+  let loops=0;
+  while(loops<34){   // лишние проходы, чтобы лабиринт не был чистым деревом; масштабировано под новый размер
+    const r=1+Math.floor(rng()*(ROWS-2)),c=1+Math.floor(rng()*(COLS-2));
+    if(grid[r][c]===1){
+      const h=grid[r][c-1]===0&&grid[r][c+1]===0, v=grid[r-1][c]===0&&grid[r+1][c]===0;
+      if(h!==v){grid[r][c]=0;loops++;}
+    }
+  }
+}
+const isWall=(r,c)=>r<0||c<0||r>=ROWS||c>=COLS||grid[r][c]===1;
+const cellCX=c=>c*CELL+CELL/2, cellCY=r=>r*CELL+CELL/2;
+const toCell=(x,y)=>[Math.floor(y/CELL),Math.floor(x/CELL)];
+
+const DIRS4=[[0,1],[0,-1],[1,0],[-1,0]];
+// Стены, которые граничат с полом: только в них монстру есть смысл сидеть —
+// оттуда его слышно и оттуда он может вылезти.
+function wallCellsNearFloor(){
+  const out=[];
+  for(let r=1;r<ROWS-1;r++)for(let c=1;c<COLS-1;c++){
+    if(grid[r][c]!==1)continue;
+    if(DIRS4.some(([a,b])=>!isWall(r+a,c+b)))out.push([r,c]);
+  }
+  return out;
+}
+function bfs(sr,sc,wallCost,floorCost){ // wallCost: цена стены, floorCost: цена пола (по умолч. 1)
+  const D=Array.from({length:ROWS},()=>new Array(COLS).fill(Infinity));
+  const P=Array.from({length:ROWS},()=>new Array(COLS).fill(null));
+  D[sr][sc]=0;
+  if(wallCost===undefined){
+    // Обычный поиск по полу: все рёбра весят 1, значит хватает FIFO-очереди без сортировок.
+    const q=[sr,sc];let head=0;
+    while(head<q.length){
+      const r=q[head++],c=q[head++],d=D[r][c];
+      for(const [dr,dc] of DIRS4){
+        const nr=r+dr,nc=c+dc;
+        if(nr<0||nc<0||nr>=ROWS||nc>=COLS||grid[nr][nc]===1)continue;
+        if(d+1<D[nr][nc]){D[nr][nc]=d+1;P[nr][nc]=[r,c];q.push(nr,nc);}
+      }
+    }
+    return {D,P};
+  }
+  // Дейкстра на двоичной куче: стена проходима, но стоит wallCost.
+  const hd=[],hr=[],hc=[];
+  const push=(d,r,c)=>{
+    hd.push(d);hr.push(r);hc.push(c);
+    let i=hd.length-1;
+    while(i>0){
+      const p=(i-1)>>1;if(hd[p]<=hd[i])break;
+      [hd[p],hd[i]]=[hd[i],hd[p]];[hr[p],hr[i]]=[hr[i],hr[p]];[hc[p],hc[i]]=[hc[i],hc[p]];i=p;
+    }
+  };
+  const pop=()=>{
+    const td=hd[0],tr=hr[0],tc=hc[0],n=hd.length-1;
+    hd[0]=hd[n];hr[0]=hr[n];hc[0]=hc[n];hd.pop();hr.pop();hc.pop();
+    let i=0;
+    for(;;){
+      const l=i*2+1,rg=l+1;let m=i;
+      if(l<n&&hd[l]<hd[m])m=l;
+      if(rg<n&&hd[rg]<hd[m])m=rg;
+      if(m===i)break;
+      [hd[m],hd[i]]=[hd[i],hd[m]];[hr[m],hr[i]]=[hr[i],hr[m]];[hc[m],hc[i]]=[hc[i],hc[m]];i=m;
+    }
+    return [td,tr,tc];
+  };
+  push(0,sr,sc);
+  while(hd.length){
+    const [d,r,c]=pop();
+    if(d>D[r][c])continue;
+    for(const [dr,dc] of DIRS4){
+      const nr=r+dr,nc=c+dc;
+      if(nr<0||nc<0||nr>=ROWS||nc>=COLS)continue;
+      const w=grid[nr][nc]===1?wallCost:(floorCost||1);
+      if(d+w<D[nr][nc]){D[nr][nc]=d+w;P[nr][nc]=[r,c];push(d+w,nr,nc);}
+    }
+  }
+  return {D,P};
+}
+function pathTo(P,r,c){const p=[];let cur=[r,c];while(cur){p.push(cur);cur=P[cur[0]][cur[1]];}return p.reverse();}
+
+// feature placement by distance from start
+const START=[1,1];
+let base=null,maxD=0,floors=[],used=[];
+let CANV=[],EXIT=null,SAFE=[],GUIDE=null;
+function farFromUsed(r,c){return used.every(([ur,uc])=>Math.abs(ur-r)+Math.abs(uc-c)>=5);}
+// Все находки висят на стене: полотно, существо-проводник, украшения. На случайной
+// карте клетка может оказаться перекрёстком без единой стены рядом — тогда вешать
+// не на что, и полотно просто не нарисуется. Поэтому стена рядом — условие отбора.
+function hasWallNear(r,c){return DIRS4.some(([dr,dc])=>isWall(r+dr,c+dc));}
+function placeAt(frac){
+  let best=null,bd=Infinity;
+  for(const [r,c] of floors){
+    if(!hasWallNear(r,c))continue;
+    const d=Math.abs(base.D[r][c]-frac*maxD);
+    if(d<bd&&farFromUsed(r,c)){bd=d;best=[r,c];}
+  }
+  if(best)used.push(best);
+  return best;
+}
+
+// какая стена рядом с клеткой — чтобы вешать на неё полотно/существо/монстра
+function wallFaceOf(cell){
+  const [r,c]=cell;
+  for(const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]){
+    if(isWall(r+dr,c+dc)){
+      return {dr,dc,
+        x:cellCX(c)+dc*CELL*.47, y:cellCY(r)+dr*CELL*.47,
+        ux:dr?1:0, uy:dr?0:1};   // вектор вдоль стены
+    }
+  }
+  return null;
+}
+let WALL_SKIN=[];   // камень, граничащий с полом
+
+// ============ СТОЛЫ С ЗАПИСКАМИ ============
+// Тупик перестаёт быть «свернул не туда» и становится находкой: там стоит стол,
+// на столе книжечка. Это единственная вещь, дающая лабиринту смысл вне навигации.
+const NOTE_REACH=CELL*1.0;      // с какого расстояния можно прочесть
+const TABLES=[];                // {x,y,ux,uy,dx,dy,text,wand}
+function deadEndCells(){
+  const out=[];
+  for(const [r,c] of floors){
+    let open=0,od=null;
+    for(const [dr,dc] of DIRS4) if(!isWall(r+dr,c+dc)){open++;od=[dr,dc];}
+    if(open===1)out.push({cell:[r,c],out:od});
+  }
+  return out;
+}
+let CANV_FACE=[],GUIDE_FACE=null;
+
+// ============ украшения на стенах ============
+// Стены не пустые: на них созвездия и чужие каракули. Смотреть на них — привычка,
+// и именно эта привычка делает фазу 1: среди них прячутся гнёзда щупалец.
+// Заметить гнездо можно только если присматриваться — оно едва пульсирует.
+const DECOR_MAX=90;      // сколько украшений развесить всего
+const NEST_COUNT=10;     // сколько из них на самом деле гнёзда
+const DECOR=[];
+function makeDecor(){
+  DECOR.length=0;
+  const busy=new Set([...CANV,GUIDE,EXIT,...SAFE].map(c=>c[0]*COLS+c[1]));
+  const faces=[];
+  for(const [r,c] of floors){
+    if(busy.has(r*COLS+c))continue;
+    for(const [dr,dc] of DIRS4) if(isWall(r+dr,c+dc)) faces.push({r,c,dr,dc});
+  }
+  for(let i=faces.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[faces[i],faces[j]]=[faces[j],faces[i]];}
+  const taken=new Set();
+  const KINDS=['star','scrawl','spiral','tally'];
+  let nests=0;
+  for(const f of faces){
+    if(DECOR.length>=DECOR_MAX)break;
+    if(taken.has(f.r*COLS+f.c))continue;              // не больше одного на клетку
+    taken.add(f.r*COLS+f.c);
+    // гнёзда не ставим у самого старта — игрок должен сначала привыкнуть к украшениям
+    const canNest=nests<NEST_COUNT&&base.D[f.r][f.c]>8&&rng()<.25;
+    if(canNest)nests++;
+    DECOR.push({
+      cell:[f.r,f.c], dr:f.dr, dc:f.dc,
+      x:cellCX(f.c)+f.dc*CELL*.47, y:cellCY(f.r)+f.dr*CELL*.47,
+      ux:f.dr?1:0, uy:f.dr?0:1,
+      kind:canNest?'nest':KINDS[Math.floor(rng()*KINDS.length)],
+      seed:rng()*100, n:4+Math.floor(rng()*5), used:false
+    });
+  }
+  // если гнёзд не набралось (мало подходящих стен) — переделываем ближайшие украшения
+  for(let i=0;i<DECOR.length&&nests<NEST_COUNT;i++){
+    if(DECOR[i].kind!=='nest'&&base.D[DECOR[i].cell[0]][DECOR[i].cell[1]]>8){DECOR[i].kind='nest';nests++;}
+  }
+}
+
+// ============ shapes / drawing minigame ============
+const PALETTE=['#39FF9E','#4FD8FF','#FF5FA8'];
+// ПУЛ ФИГУР. Раньше их было ровно шесть и они шли всегда в одном порядке — кто умирал
+// на пятом полотне, перерисовывал те же четыре. Теперь из пула на забег берутся шесть.
+// Это стало безопасно только после того, как порядок точек начал читаться по яркости
+// (см. dotAlpha): пока правило «номерков нет» держалось на памяти игрока, незнакомая
+// фигура делала полотно непроходимым.
+const SHAPE_POOL=[
+  {name:'ключ',pts:[[.34,.18],[.5,.16],[.52,.34],[.64,.36],[.62,.48],[.52,.46],[.5,.8],[.34,.78]]},
+  {name:'птица',pts:[[.22,.55],[.38,.36],[.5,.44],[.68,.26],[.63,.5],[.74,.55],[.55,.62],[.38,.72]]},
+  {name:'лампа',pts:[[.42,.14],[.58,.14],[.66,.42],[.55,.45],[.55,.62],[.62,.78],[.38,.78],[.45,.62],[.45,.45],[.34,.42]]},
+  {name:'мотылёк',pts:[[.5,.2],[.66,.3],[.74,.55],[.58,.55],[.62,.78],[.5,.66],[.38,.78],[.42,.55],[.26,.55],[.34,.3]]},
+  {name:'дом',pts:[[.3,.8],[.3,.42],[.5,.2],[.7,.42],[.7,.8],[.58,.8],[.58,.6],[.42,.6],[.42,.8]]},
+  {name:'улитка',pts:[[.5,.18],[.64,.24],[.74,.38],[.72,.56],[.6,.7],[.44,.74],[.3,.68],[.22,.54],[.26,.38],[.38,.28],[.5,.36]]},
+  {name:'рыба',pts:[[.22,.5],[.34,.34],[.54,.32],[.68,.44],[.8,.3],[.8,.7],[.68,.56],[.54,.68],[.34,.66]]},
+  {name:'дерево',pts:[[.44,.82],[.44,.58],[.3,.52],[.24,.38],[.36,.28],[.5,.18],[.64,.28],[.76,.4],[.64,.54],[.56,.58],[.56,.82]]},
+  {name:'рука',pts:[[.32,.82],[.29,.56],[.24,.36],[.36,.34],[.42,.24],[.52,.26],[.6,.3],[.68,.42],[.68,.6],[.6,.82]]},
+  {name:'глаз',pts:[[.2,.5],[.32,.34],[.46,.26],[.6,.3],[.74,.4],[.82,.5],[.7,.62],[.56,.7],[.4,.68],[.28,.6]]},
+  {name:'череп',pts:[[.34,.3],[.44,.18],[.58,.18],[.68,.3],[.7,.48],[.6,.58],[.6,.74],[.42,.74],[.42,.58],[.32,.48]]},
+  {name:'кораблик',pts:[[.48,.14],[.76,.48],[.5,.48],[.24,.48],[.18,.64],[.32,.8],[.7,.8],[.84,.64],[.62,.48]]},
+  {name:'часы',pts:[[.26,.14],[.74,.14],[.66,.3],[.54,.46],[.66,.62],[.74,.78],[.26,.78],[.34,.62],[.46,.46],[.34,.3]]},
+  {name:'цветок',pts:[[.5,.82],[.5,.54],[.34,.48],[.28,.32],[.42,.24],[.5,.12],[.6,.24],[.74,.32],[.68,.48],[.6,.5]]},
+  {name:'колокол',pts:[[.5,.1],[.62,.2],[.68,.4],[.76,.6],[.8,.72],[.2,.72],[.24,.6],[.32,.4],[.38,.2]]},
+  {name:'замок',pts:[[.32,.44],[.32,.32],[.4,.22],[.5,.18],[.6,.22],[.68,.32],[.68,.44],[.78,.44],[.78,.8],[.22,.8],[.22,.44]]},
+  {name:'змея',pts:[[.16,.7],[.3,.78],[.46,.7],[.58,.58],[.68,.44],[.64,.28],[.5,.2],[.36,.26],[.34,.4],[.46,.46]]},
+  {name:'гроб',pts:[[.42,.12],[.58,.12],[.68,.28],[.7,.42],[.62,.62],[.58,.84],[.42,.84],[.38,.62],[.3,.42],[.32,.28]]},
+  {name:'дверь',pts:[[.32,.84],[.32,.3],[.42,.18],[.58,.18],[.68,.3],[.68,.84],[.58,.84],[.58,.52],[.42,.52],[.42,.84]]},
+  {name:'свеча',pts:[[.5,.12],[.6,.24],[.54,.36],[.44,.36],[.38,.24],[.36,.44],[.36,.8],[.64,.8],[.64,.44]]},
+];
+const N_CANV=6;               // сколько полотен в прогоне
+let SHAPES=[];                // шесть фигур ЭТОГО забега
+const DOT_TIME_COST=2; // сек, снимается с таймера за каждую верно соединённую точку
+// РЕАЛЬНЫЙ запас времени на полотно — то, что игрок ощущает.
+// Базовый таймер считается из него автоматически, потому что каждая соединённая точка
+// съедает DOT_TIME_COST. Крутить нужно именно эти числа.
+// ПРАВИЛА ПОЛОТЕН. Раньше от полотна к полотну менялось только количество —
+// больше шума, меньше времени. К четвёртому игрок осваивал приём, и дальше это работа.
+// Теперь на каждом новом полотне меняется само ПРАВИЛО, а не цифра.
+//   noNums — номерков под точками нет, остаётся только порядок цветов
+//   lamp   — полотно в темноте, светит только пятно вокруг палочки
+//   drift  — точки медленно плывут, целиться сложнее
+const CANV_MODS=[[],[],['noNums'],['lamp'],['drift'],['noNums','drift']];
+const MOD_NAME={noNums:'НОМЕРКОВ НЕТ',lamp:'ПОЛОТНО В ТЕМНОТЕ',drift:'ТОЧКИ ПЛЫВУТ'};
+const CANV_TIME_NET=[25,20,18,15,15,15];
+let CANV_TIME=[];
+// Порядок правил (CANV_MODS) привязан к НОМЕРУ полотна, а не к фигуре: эскалация
+// обучения — это замысел, её тасовать нельзя. Меняется только что именно ты рисуешь.
+// Выбранные фигуры сортируются по числу точек: рисунок тоже должен усложняться.
+// Запас чистого времени (CANV_TIME_NET) от этого не плывёт — каждая точка съедает
+// ровно DOT_TIME_COST, и таймер пересчитывается от неё.
+function pickShapes(){
+  const pool=SHAPE_POOL.slice();
+  for(let i=pool.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+  SHAPES=pool.slice(0,N_CANV).sort((a,b)=>a.pts.length-b.pts.length);
+  CANV_TIME=CANV_TIME_NET.map((t,i)=>t+SHAPES[i].pts.length*DOT_TIME_COST);
+}
+pickShapes();
+// провал по времени: рисунок осыпается, страх копится и трясёт следующую попытку
+const DISSOLVE_T=1.15;  // сколько секунд осыпается
+const FEAR_STEP=.6;     // прибавка к множителю дрожи за каждый провал
+const FEAR_MAX=3;       // потолок дрожи, иначе рисовать физически невозможно
+// мелкие твари: изредка заползают на нужную точку и закрывают её собой
+// чёрные щупальца на полотне: выхлёстывают из-за края картины, накрывают нужную точку
+// и на доли секунды делают её ненажимаемой
+const TENT={
+  everyNth:2,           // через полотно: 1-е и 3-е (индексы 0 и 2)
+  first:[3,7],          // когда впервые, сек от начала полотна
+  cover:[.25,.5],       // сколько держит точку закрытой
+  repeat:[3.5,6.5],     // пауза до следующего выпада (было 2.2–4.5: приедалось за одно полотно)
+  strike:.12,           // выхлёст и уход
+  arms:[3,5],           // сколько щупалец в пучке
+  block:.55,            // с какой доли перекрытия точка перестаёт нажиматься
+};
+// ============ ФИНАЛ ============
+// Раньше игра кончалась так: добежал до выхода — экран со статистикой. Последние
+// тридцать секунд, то есть ровно то, что человек потом пересказывает, были пустыми.
+// Теперь выход — не дверь, а ПОСЛЕДНЕЕ ПОЛОТНО: дверь надо нарисовать. Тем самым
+// действием, которым игрок занимался всю игру, и под тем самым, от кого он бежал.
+// Таймера нет. Вместо него — он сам: идёт по коридору за спиной, медленно, и полоска
+// показывает не секунды, а насколько он близко.
+const FINAL={
+  dist:14,       // с какого обхода по коридорам он начинает подходить
+  speed:26,      // px/с — он НЕ бежит. Успеешь, если руки не подведут
+  reach:CELL*.7, // на каком расстоянии забирает
+  // дверь берём фиксированной формой: она обязана читаться как дверь
+  door:[[.32,.84],[.32,.3],[.42,.18],[.58,.18],[.68,.3],[.68,.84],[.58,.84],[.58,.52],[.42,.52],[.42,.84]],
+};
+let lightT=0;    // засвет после того, как дверь дорисована
+const rr=a=>a[0]+rnd()*(a[1]-a[0]);
+
+// ============ state ============
+let state='start'; // start explore draw mash caught win
+let tGlobal=0,lastT=0;
+const keys={};
+const mouse={x:0,y:0}; // виртуальный курсор (мышь захвачена pointer lock)
+
+let START_ANG=0;   // смотрим в сторону первого открытого прохода, считается в buildWorld
+// ============ СБОРКА МИРА ============
+// Лабиринт, находки, украшения и столы теперь пересобираются на каждый забег.
+// Раньше всё это считалось один раз при загрузке по прибитому сиду: карта была одна
+// и та же всегда, и второе прохождение превращалось в перебег по памяти.
+//
+// Плата за это — числа. Всё, что выверялось (сколько монстр идёт сквозь камень,
+// какой обход считать «далеко»), мерялось на ОДНОЙ карте. Поэтому сид не просто
+// случайный: негодные отбраковываются, а числа перемерены на сотнях карт.
+function worldOk(){
+  if(floors.length<340||maxD<38)return false;        // тесная или мелкая карта
+  if(WALL_SKIN.length<90)return false;               // монстру негде сидеть в камне
+  if(deadEndCells().length<10)return false;          // некуда ставить столы с записками
+  if(CANV.some(c=>!c)||!EXIT||!GUIDE||SAFE.some(c=>!c))return false;
+  if(CANV_FACE.some(f=>!f)||!GUIDE_FACE)return false; // полотно не на что повесить
+  return true;
+}
+let worldTries=1;
+function buildWorld(){
+  for(worldTries=1;;worldTries++){
+    worldSeed=(rnd()*4294967296)|0;
+    rng=mulberry32(worldSeed);
+    genMaze();
+    base=bfs(START[0],START[1]);
+    maxD=0;floors=[];
+    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)
+      if(grid[r][c]===0&&isFinite(base.D[r][c])){floors.push([r,c]);maxD=Math.max(maxD,base.D[r][c]);}
+    used=[START];
+    // шесть полотен, равномерно по глубине лабиринта от старта
+    CANV=[placeAt(.18),placeAt(.32),placeAt(.46),placeAt(.60),placeAt(.74),placeAt(.88)];
+    EXIT=(()=>{let best=null,bd=-1;
+      for(const [r,c] of floors) if(base.D[r][c]>bd&&hasWallNear(r,c)&&farFromUsed(r,c)){bd=base.D[r][c];best=[r,c];}
+      if(best)used.push(best);return best;})();
+    SAFE=[START.slice(),placeAt(.54)];
+    GUIDE=placeAt(.5);
+    CANV_FACE=CANV.map(c=>c?wallFaceOf(c):null);
+    GUIDE_FACE=GUIDE?wallFaceOf(GUIDE):null;
+    WALL_SKIN=wallCellsNearFloor();
+    if(worldOk())break;
+    if(worldTries>=80)break;   // страховка: лучше кривая карта, чем зависшая вкладка
+  }
+  START_ANG=(()=>{
+    for(const [dr,dc] of DIRS4) if(!isWall(START[0]+dr,START[1]+dc))return Math.atan2(dr,dc);
+    return 0;
+  })();
+  makeDecor();
+  makeTables();
+}
+buildWorld();
+
+const player={x:cellCX(START[1]),y:cellCY(START[0]),r:11,speed:160,stepT:0,wallTouch:0,invuln:0,
+  ang:START_ANG,pitch:0,bob:0};
+
+function makeTables(){
+  TABLES.length=0;
+  const busy=new Set([START,...CANV,GUIDE,EXIT,...SAFE].map(c=>c[0]*COLS+c[1]));
+  for(const de of deadEndCells()){
+    const [r,c]=de.cell;
+    if(busy.has(r*COLS+c))continue;
+    const [dr,dc]=de.out;                       // куда открыт тупик
+    TABLES.push({
+      x:cellCX(c)-dc*9, y:cellCY(r)-dr*9,       // стол придвинут к глухому концу
+      dx:-dc, dy:-dr,                           // «от игрока в глубину»
+      ux:dr?1:0, uy:dr?0:1,                     // длинная сторона столешницы
+      text:'Никому не доверяй', wand:false, read:false});
+  }
+  // Стартовый стол — прямо за спиной игрока в его же клетке.
+  const bx=-Math.cos(START_ANG), by=-Math.sin(START_ANG);
+  TABLES.push({
+    x:cellCX(START[1])+bx*11, y:cellCY(START[0])+by*11,
+    dx:bx, dy:by,
+    ux:Math.abs(bx)>Math.abs(by)?0:1, uy:Math.abs(bx)>Math.abs(by)?1:0,
+    text:'Я не могу себя долго контролировать', wand:true, read:false});
+}
+
+
+// ============ ТРИ ФАЗЫ СТРАХА ============
+// 1 — стены. Монстр только бродит и слышен, охотиться НЕ умеет. Угроза — гнёзда щупалец.
+// 2 — глухота. Шум игрока заглушает монстра: единственный сенсор перестаёт работать.
+// 3 — монстр активирован. Сороконожка, ходит рядом, рвётся сквозь стены, мешает рисовать.
+// Гейт по фазам — главное: раньше монстр охотился с первой секунды, и эскалации не было вовсе.
+let phase=1;
+const PH2_ERRORS=2;      // ошибок, после которых наступает глухота
+// В фазах 1–2 монстр НЕ ходит по комнатам — он движется внутри стен и только слышен.
+// Он медленно подбирается к игроку сквозь камень; когда подобрался вплотную — рвёт стену
+// и выходит наружу. Это и есть переход в фазу 3.
+const PH3_MEET=CELL*2.2;   // на каком расстоянии сквозь стену он решает вылезти
+const TAINT_R=CELL*2.8;    // на сколько вокруг монстра камень выдаёт, что он той же массы
+const CUT_FAR=12;          // клеток ОБХОДА по коридорам, после которых он в финале режет напрямую
+const INWALL_SPEED=32;     // ~1/5 скорости игрока: угроза нарастает на слух, а не догоняет
+const INWALL_WANDER=.4;    // доля пересчётов, когда он идёт не к игроку, а куда попало
+let noise=0;             // 0..1 — сколько шума наделал игрок
+let noisePeak=0;         // держится дольше, чтобы фаза не мигала
+let cut=null;            // короткая катсцена: {t,dur,kind,...}
+
+// mode: inwall (сидит в стенах, фазы 1–2) | roam | hunt | chase | gone
+const monster={x:0,y:0,mode:'inwall',target:null,path:[],pathT:0,stun:0,speed:90,
+  visible:false,gone:0,seeT:0,lost:0,prev:null,trail:[],trailT:0,burstT:0,chaseT:0,cutting:false};
+const SIGHT_RANGE=CELL*7;  // на сколько монстр видит игрока по прямой
+const HUNT_SPEED=118;      // медленнее игрока (160): можно рассмотреть и уйти
+const HUNT_LOSE=4;         // сек без прямой видимости — теряет след
+const flash={charged:true,cd:0,CD:60};
+// Потолок 9, а не 6: полотен теперь шесть, на последних по 15 с, и поимка тоже
+// добавляет ошибку — со старым потолком третья стадия наступала почти гарантированно.
+const madness={errors:0,MAX:9,anger:0};
+const M_STAGE=[3,6,9];   // границы стадий
+const mStage=()=>madness.errors>=M_STAGE[2]?3:madness.errors>=M_STAGE[1]?2:madness.errors>=M_STAGE[0]?1:0;
+const DEATH_LIMIT=3;    // столько поимок ПОДРЯД — и всё сначала
+const prog={done:0,fear:1,deaths:0,streak:0,monKills:0,startTime:0}; // fear — множитель дрожи на следующем полотне
+// щупальца из стены: вылезают в 2–4 клетках от игрока, предпочтительно за спиной
+const WALL_BACK=[2,4];
+const WALL_STRIKE=1.2;   // сек удара, потом уходит обратно в стену
+let wall=null;
+let chase=null;
+let mash=null;
+let draw=null;
+let guide={used:false,trail:null,trailT:0,drawing:false};
+let canvasArm=true;
+let ambushDone=false,ambushT=-1;
+let msg='',msgT=0,caughtT=0;
+let note=null;          // открытая записка: {text,t}
+let hasWand=false;      // без палочки нет света: игра начинается в темноте
+let wandHintT=0;        // через сколько подсказать, что надо обернуться
+let sndSkitT=0,sndHeartT=0,sndBreathT=0,sndRingT=0,eyes=[];
+let locked=false;
+
+// ---- НИТЬ СОЗДАТЕЛЯ (dev-подсказка) ----
+const thread={on:DEV,path:null,t:0};
+function threadTarget(){return prog.done<N_CANV?CANV[prog.done]:EXIT;}
+function updThread(dt){
+  thread.t-=dt;
+  if(thread.t<=0){
+    thread.t=.35;
+    const [pr,pc]=toCell(player.x,player.y);
+    if(isWall(pr,pc)){thread.path=null;return;}
+    const tgt=threadTarget();
+    const b=bfs(pr,pc);
+    thread.path=isFinite(b.D[tgt[0]][tgt[1]])?pathTo(b.P,tgt[0],tgt[1]):null;
+  }
+}
+
+// ---- ЛИНИЯ К МОНСТРУ (dev-подсказка): видно, где он, можно подойти и рассмотреть ----
+const monLine={on:DEV,path:null,t:0};
+function updMonLine(dt){
+  monLine.t-=dt;
+  if(monLine.t>0)return;
+  monLine.t=.3;
+  if(!monLine.on||monster.mode==='gone'){monLine.path=null;return;}
+  const [pr,pc]=toCell(player.x,player.y);
+  const [mr,mc]=toCell(monster.x,monster.y);
+  if(isWall(pr,pc)){monLine.path=null;return;}
+  // в стене монстр недостижим обычным поиском по полу — считаем сквозь камень
+  const b=isWall(mr,mc)?bfs(pr,pc,1):bfs(pr,pc);
+  monLine.path=isFinite(b.D[mr][mc])?pathTo(b.P,mr,mc):null;
+}
+
+// ---- линия побега: палочка ведёт к выходу во время финального забега ----
+function updChase(dt){
+  if(!chase)return;
+  chase.t=(chase.t||0)-dt;
+  if(chase.t>0)return;
+  chase.t=.3;
+  const [pr,pc]=toCell(player.x,player.y);
+  if(isWall(pr,pc)){chase.path=null;return;}
+  const b=bfs(pr,pc);
+  chase.path=isFinite(b.D[chase.to[0]][chase.to[1]])?pathTo(b.P,chase.to[0],chase.to[1]):null;
+}
+
+// ---- след палочки: где уже был, на полу остаются метки ----
+// В лабиринте без карты все коридоры одинаковые. Метки решают навигацию,
+// не ломая стиль: это те же чернильные точки, только на полу.
+const visited=new Set();
+function markVisited(){
+  const [r,c]=toCell(player.x,player.y);
+  if(!isWall(r,c))visited.add(r*COLS+c);
+}
+
+function say(t,dur){msg=t;msgT=dur||3;}
+
+// ============ input ============
+let lockFailed=false;  // браузер отказал в захвате мыши — играем перетаскиванием
+const SENS=0.0038;      // при захвате мыши палец ходит без границ — хватает немного
+// При перетаскивании курсор упирается в край окна, полезного хода мало,
+// поэтому коэффициент почти втрое выше. Это разные режимы, у них разные нужды.
+const SENS_DRAG=0.0105;
+let sensMul=1;          // подстройка на лету клавишами - и =, не сбрасывается между партиями
+addEventListener('keydown',e=>{
+  const wasDown=!!keys[e.code];   // нужно ДО присваивания: отличаем нажатие от автоповтора
+  keys[e.code]=true;
+  // Две клавиши, потому что на маках F9 по умолчанию перехватывает система (Mission
+  // Control) и до страницы не доходит. Backquote — это ` под Esc: в игре не занята,
+  // системой не занята, случайно в бою по ней не попадёшь.
+  if(e.code==='F9'||e.code==='Backquote'){e.preventDefault();setDev(!DEV,true);return;}
+  if(e.code==='Space'){
+    e.preventDefault();
+    // ЗАЖАТЬ НЕЛЬЗЯ. Система сама повторяет keydown, пока клавиша прижата, — и QTE
+    // проходился зажатым пробелом, то есть вообще без борьбы. Считаем только настоящее
+    // нажатие: переход из отпущенного в нажатое. e.repeat ловит автоповтор напрямую,
+    // wasDown — страховка на случай, если браузер флаг не проставил.
+    if(e.repeat||wasDown)return;
+    if(state==='mash'&&mash){mash.count++;sfx.tick();addNoise(.045);}
+    else if(state==='explore')tryFlash();
+  }
+  if(DEV&&e.code==='KeyG'&&state!=='start'){
+    thread.on=!thread.on;
+    say(thread.on?'Нить создателя: ВКЛ':'Нить создателя: ВЫКЛ',2);
+  }
+  if(e.code==='KeyQ'&&state==='explore'&&quickTurn===0)quickTurn=Math.PI;  // разворот кругом
+  if(e.code==='KeyE'){                       // взять палочку / прочитать книжку / закрыть
+    if(state==='note')closeNote();
+    else if(state==='explore'){
+      const w=wandAtHand();
+      if(w)takeWand(w); else openNote(bookAtHand());
+    }
+  }
+  if(e.code==='Escape'&&state==='note')closeNote();
+  // чувствительность камеры прямо в игре: - слабее, = сильнее
+  if(e.code==='Minus'||e.code==='BracketLeft'||e.code==='NumpadSubtract'){
+    sensMul=clamp(sensMul-.15,.4,3);say('Чувствительность камеры ×'+sensMul.toFixed(2),2);
+  }
+  if(e.code==='Equal'||e.code==='BracketRight'||e.code==='NumpadAdd'){
+    sensMul=clamp(sensMul+.15,.4,3);say('Чувствительность камеры ×'+sensMul.toFixed(2),2);
+  }
+  if(DEV&&e.code==='KeyM'&&state!=='start'){
+    monLine.on=!monLine.on;monLine.t=0;
+    say(monLine.on?'Линия к монстру: ВКЛ':'Линия к монстру: ВЫКЛ',2);
+  }
+  if(e.code==='Escape'&&state==='draw'&&!guide.drawing){canvasArm=false;exitDraw(false);}
+});
+addEventListener('keyup',e=>{keys[e.code]=false;});
+
+document.addEventListener('pointerlockchange',()=>{locked=document.pointerLockElement===cv;});
+// Два способа крутить головой. Захват мыши (pointer lock) — премиальный: водишь пальцем
+// свободно, без границ. Но браузер может его не дать (file://, Safari, настройки приватности),
+// и тогда игрок остаётся без камеры вообще. Поэтому есть второй, который работает ВСЕГДА:
+// зажал тачпад и ведёшь — камера поворачивается. Никаких разрешений не требует.
+let dragging=false,dragX=0,dragY=0;
+document.addEventListener('pointerlockerror',()=>{lockFailed=true;});
+
+cv.addEventListener('mousemove',e=>{
+  if(!locked){
+    if(dragging&&state!=='draw'&&state!=='note'){   // перетаскивание = поворот
+      const k=SENS_DRAG*sensMul;
+      player.ang+=(e.clientX-dragX)*k;
+      player.pitch=clamp(player.pitch-(e.clientY-dragY)*k,-.55,.55);
+    }
+    dragX=e.clientX;dragY=e.clientY;
+    mouse.x=e.clientX;mouse.y=e.clientY;
+    return;
+  }
+  if(state==='note')return;                  // читаешь — камера стоит
+  if(state==='draw'){
+    mouse.x=clamp(mouse.x+e.movementX,0,VW);
+    mouse.y=clamp(mouse.y+e.movementY,0,VH);
+  } else {
+    const k=SENS*sensMul;
+    player.ang+=e.movementX*k;
+    player.pitch=clamp(player.pitch-e.movementY*k,-.55,.55);
+  }
+});
+cv.addEventListener('mousedown',e=>{
+  dragX=e.clientX;dragY=e.clientY;
+  if(state==='draw'){                       // мышь тут отпущена: берём координаты события (тап тачпада тоже сюда)
+    if(locked)drawClick(mouse.x,mouse.y);
+    else drawClick(e.clientX,e.clientY);
+    return;
+  }
+  if(state==='note'){closeNote();return;}
+  const wnd=wandAtHand();
+  if(wnd){takeWand(wnd);return;}            // щелчок по палочке = взять
+  const bk=bookAtHand();
+  if(bk){openNote(bk);return;}              // щелчок по книжке рядом = прочитать
+  dragging=true;
+  if(!locked&&state!=='start'&&state!=='win')grabMouse();
+});
+addEventListener('mouseup',()=>{dragging=false;});
+addEventListener('blur',()=>{
+  dragging=false;
+  // Ушёл из окна — отпускаем всё. Иначе потерянный keyup оставил бы клавишу «прижатой»:
+  // игрок шёл бы сам по себе, а пробел перестал бы засчитываться совсем.
+  for(const k in keys)keys[k]=false;
+});
+
+// ============ flash ============
+function tryFlash(){
+  if(!hasWand){say('Нечем. Палочка осталась на столе.',3);return;}
+  if(!flash.charged)return;
+  const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+  if(monster.mode!=='gone'&&d<CELL*6){
+    flash.charged=false;flash.cd=flash.CD;
+    sfx.flash();addNoise(.55);   // вспышка громкая — после неё какое-то время глухо
+    monster.stun=3.5;
+    let best=null,bd=-1;
+    for(const[r,c]of floors){const dd=dist2(cellCX(c),cellCY(r),player.x,player.y);if(dd>bd){bd=dd;best=[r,c];}}
+    monster.x=cellCX(best[1]);monster.y=cellCY(best[0]);
+    if(monster.mode==='chase'){say('Вспышка отбросила его. Но он вернётся.');}
+    else {
+      if(monster.mode==='hunt'){monster.mode='roam';monster.target=null;monster.lost=0;} // вспышка сбивает охоту
+      say('Вспышка. Оно отступило.');
+    }
+  } else {
+    say('Рядом никого... вспышку лучше беречь.');
+  }
+}
+
+// ============ drawing minigame ============
+function startDraw(idx,isGuide,isFinal){
+  const shape=isFinal?{name:'дверь',pts:FINAL.door}
+    :isGuide?{name:'существо',pts:[[.35,.3],[.65,.3],[.7,.6],[.5,.78],[.3,.6]]}:SHAPES[idx];
+  const n=shape.pts.length;
+  const dots=[];
+  shape.pts.forEach((p,i)=>dots.push({nx:p[0],ny:p[1],idx:i,col:isGuide?0:Math.floor(rnd()*3),done:false,ph:rnd()*6.283}));
+  const noiseN=isFinal?12:isGuide?3:6+idx*2;   // 6/8/10/12/14/16 — при шаге 3 на шестом полотне доска забивалась
+  for(let k=0;k<noiseN;k++){
+    let nx,ny,ok=false,tr=0;
+    while(!ok&&tr<80){nx=.08+rnd()*.84;ny=.08+rnd()*.84;
+      ok=dots.every(d=>(d.nx-nx)**2+(d.ny-ny)**2>.006);tr++;}
+    if(ok)dots.push({nx,ny,idx:-1,col:Math.floor(rnd()*3),done:false,ph:rnd()*6.283});
+  }
+  const quiet=isGuide||isFinal;   // без таймера: у финала вместо секунд — сам монстр
+  draw={dots,next:0,n,shapeIdx:idx,timeMax:quiet?999:CANV_TIME[idx],timeLeft:quiet?999:CANV_TIME[idx],
+    tremor:(isGuide?1:clamp(prog.fear,1,FEAR_MAX)),isGuide:!!isGuide,final:!!isFinal,penT:0,
+    dissolve:0,tent:null,near:0,finStart:1,
+    // В фазе 3 монстр лезет на КАЖДОЕ полотно и чаще: он теперь мешает рисовать намеренно.
+    tentOk:!quiet&&(phase>=3||idx%TENT.everyNth===0),
+    tentT:phase>=3?rr([3,5.5]):rr(TENT.first),
+    mods:new Set(quiet?[]:CANV_MODS[idx]||[])};
+  guide.drawing=!!isGuide;
+  if(draw.mods.size)say([...draw.mods].map(m=>MOD_NAME[m]).join(' · ')
+    +(draw.mods.has('noNums')?' — чем ярче точка, тем раньше её очередь':''),5);
+  if(isFinal)placeFinalMonster();   // финал — единственное полотно, где он НЕ ждёт
+  else parkMonster();               // на остальных отойти и замереть, пока игрок рисует
+  // Щупальца, застигнутые на подходе к полотну, снимаем и взводим встречу заново.
+  // Иначе они замирали на паузе и били сразу же, как только игрок выходил с полотна.
+  if(wall&&wall.kind==='burst')wall=null;   // выпрыгивание на подходе к полотну снимаем
+  mouse.x=VW/2;mouse.y=VH/2;
+  state='draw';
+  releaseMouse();   // на полотне работает родной курсор — так тачпад точнее виртуального
+}
+// Пока игрок рисует, монстр стоит и ждёт. Если полотно застало его вплотную —
+// отводим на DRAW_PARK клеток по коридору, к ближайшему к нему подходящему месту,
+// чтобы он именно отступил и замер, а не телепортировался через полкарты.
+const DRAW_PARK=5;
+function parkMonster(){
+  if(monster.mode==='gone'||monster.mode==='inwall')return;   // в камне он и так не тронет
+  const [pr,pc]=toCell(player.x,player.y);
+  if(isWall(pr,pc))return;
+  const b=bfs(pr,pc);
+  const [mr,mc]=toCell(monster.x,monster.y);
+  const dNow=isWall(mr,mc)?Infinity:b.D[mr][mc];
+  if(isFinite(dNow)&&dNow>=DRAW_PARK)return;                  // уже далеко — просто замрёт
+  let best=null,bd=Infinity;
+  for(const [r,c] of floors){
+    const dd=b.D[r][c];
+    if(!isFinite(dd)||dd<DRAW_PARK||dd>DRAW_PARK+4)continue;
+    const near=dist2(monster.x,monster.y,cellCX(c),cellCY(r));
+    if(near<bd){bd=near;best=[r,c];}
+  }
+  if(best){
+    monster.x=cellCX(best[1]);monster.y=cellCY(best[0]);
+    monster.path=null;monster.target=null;monster.trail=[];
+  }
+}
+
+// ---- захват мыши: в лабиринте держим, на полотне отпускаем ----
+function releaseMouse(){
+  cv.style.cursor='crosshair';
+  if(document.pointerLockElement===cv&&document.exitPointerLock)document.exitPointerLock();
+}
+function grabMouse(){
+  cv.style.cursor='none';
+  if(!cv.requestPointerLock)return;
+  // Некоторые браузеры бросают синхронно (file://, жёсткие настройки приватности).
+  // Без try это исключение убивало resetGame целиком и игра не запускалась вовсе.
+  try{
+    const p=cv.requestPointerLock();
+    if(p&&p.catch)p.catch(()=>{lockFailed=true;});
+  }catch(e){ lockFailed=true; }
+}
+// Позиция точки с учётом дрейфа. Отрисовка и попадание обязаны считать её ОДИНАКОВО,
+// иначе игрок целится в одно, а нажимает другое.
+// Яркость вместо номерка. Без номерков порядок читался только по цветной ленте внизу,
+// а точек одного цвета на доске несколько — понять, какую жать, было нельзя вообще.
+// Работало это лишь потому, что шесть полотен можно выучить наизусть; как только фигур
+// станет больше, правило превратилось бы в непроходимое.
+// Теперь порядок записан ЯРКОСТЬЮ: первая точка самая яркая, дальше ступеньками вниз,
+// шум — ниже всех. Это не подсказка «жми сюда»: ступеньку в 5% под дрожащей рукой и
+// таймером ещё надо разглядеть, а сравнивать приходится всю доску сразу.
+function dotAlpha(d){
+  if(d.done)return 1;
+  if(!draw.mods.has('noNums'))return d.idx>=0?.95:.8;
+  if(d.idx<0)return .34;                       // шум — заметно тусклее любой нужной
+  return 1-.42*(d.idx/Math.max(1,draw.n-1));   // 1.00 → 0.58 ступеньками по порядку
+}
+function dotXY(d,b){
+  if(!draw.mods.has('drift'))return [b.x+d.nx*b.w, b.y+d.ny*b.h];
+  const t=tGlobal*.9+d.ph;
+  return [b.x+d.nx*b.w+Math.cos(t)*8, b.y+d.ny*b.h+Math.sin(t*1.3)*6];
+}
+function boardRect(){
+  const w=Math.min(VW*.72,760),h=Math.min(VH*.7,540);
+  return {x:(VW-w)/2,y:(VH-h)/2-20,w,h};
+}
+function drawClick(mx,my){
+  if(draw.dissolve>0)return;   // рисунок осыпается — руки заняты
+  const b=boardRect(),R=16;
+  // Берём БЛИЖАЙШУЮ точку в радиусе, а не первую попавшуюся. Раньше побеждал порядок
+  // в массиве: на полотнах с дрейфом соседи сходятся до 21 px при радиусе 16, зоны
+  // захвата перекрываются, и игрок целился в одну точку, а нажимал другую — засчитывалась
+  // ошибка, которой он не делал. С ближайшей граница всегда посередине между точками.
+  let hit=null,hd=R*R;
+  for(const d of draw.dots){
+    if(d.done)continue;
+    const [dx,dy]=dotXY(d,b);
+    const q=dist2(mx,my,dx,dy);
+    if(q<hd){hd=q;hit=d;}
+  }
+  if(!hit)return;
+  if(tentBlocks(hit.idx)){sfx.whip();return;}   // щупальце держит точку — не нажать, но и не ошибка
+  if(hit.idx===draw.next){
+    hit.done=true;draw.next++;sfx.ok(draw.next);
+    if(!draw.isGuide){draw.timeLeft-=DOT_TIME_COST;draw.penT=.7;} // линия тянется — время утекает
+    if(draw.next>=draw.n)finishDraw();
+  } else {
+    if(draw.isGuide){sfx.err();return;} // guide drawing is safe
+    addError('Неверная точка.');
+  }
+}
+// Единственная точка роста безумия. Растёт от двух вещей: ошибок рисования и поимок.
+function addMadness(reason){
+  madness.errors++;
+  if(madness.errors>madness.MAX)madness.anger++;
+  say(reason+' Лабиринт это запомнил.');
+  if(madness.errors===M_STAGE[0])say('Стены начали шевелиться.',4);
+  if(madness.errors===M_STAGE[1])say('В темноте кто-то смотрит.',4);
+  if(madness.errors===madness.MAX)say('Стены больше не притворяются стенами.',5);
+  if(madness.anger===1)say('Ты его разозлил.',4);
+}
+function addError(reason){sfx.err();addMadness(reason);}
+function finishDraw(){
+  sfx.door();
+  if(draw.isGuide){
+    exitDraw(true);
+    guide.used=true;
+    const tgt=prog.done<N_CANV?CANV[prog.done]:EXIT;
+    const b=bfs(...toCell(player.x,player.y));
+    guide.trail=pathTo(b.P,tgt[0],tgt[1]);guide.trailT=14;
+    say('Существо довольно. Оно показывает дорогу.');
+    return;
+  }
+  if(draw.final){        // дверь дорисована — впервые за всю игру появляется свет
+    state='lightout';lightT=0;
+    duckAudio(1.4);sfx.door();
+    return;
+  }
+  prog.done++;
+  prog.fear=1;            // полотно сдано — страх отпускает
+  prog.streak=0;          // серия поимок прервана: игрок продвинулся
+  exitDraw(true);
+  if(prog.done>=N_CANV)startFinale();
+  else{
+    say('Проход открыт. Полотно '+prog.done+'/'+N_CANV+'.',4);
+  }
+}
+// ФИНАЛ: последнее полотно сдано — монстр срывается в погоню, палочка ведёт к выходу.
+// Здесь оживают три системы, которые до этого простаивали: режим chase, линия побега
+// и вспышка (в погоне монстр быстрее игрока, убежать без вспышки уже нельзя).
+function startFinale(){
+  chase={to:EXIT};
+  wall=null;
+  monster.mode='chase';monster.stun=1.4;
+  duckAudio(.5);
+  sfx.screech();
+  say('Полотна кончились. Оно сорвалось. БЕГИ ПО ЛИНИИ.',6);
+}
+function exitDraw(){
+  state='explore';draw=null;guide.drawing=false;thread.t=0;
+  grabMouse();
+}
+
+// ============ щупальца из стены ============
+// Общий механизм для двух источников: гнёзд (фаза 1) и выпрыгиваний монстра (фаза 3).
+// стена в 2–4 клетках ПОЗАДИ игрока, которую видно, когда обернёшься
+function wallSpotBehind(){
+  const [pr,pc]=toCell(player.x,player.y);
+  if(isWall(pr,pc))return null;
+  const b=bfs(pr,pc);
+  const fx=Math.cos(player.ang), fy=Math.sin(player.ang);
+  let best=null,bs=-Infinity;
+  for(const [r,c] of floors){
+    const d=b.D[r][c];
+    if(!isFinite(d)||d<1||d>WALL_BACK[1]+2)continue;
+    const f=wallFaceOf([r,c]);
+    if(!f)continue;
+    const vx=cellCX(c)-player.x, vy=cellCY(r)-player.y, l=Math.hypot(vx,vy)||1;
+    const dot=(vx*fx+vy*fy)/l;                 // -1 = ровно за спиной, +1 = прямо по курсу
+    let score=-dot*3;                          // «позади» весит больше всего
+    if(d>=WALL_BACK[0]&&d<=WALL_BACK[1])score+=2;                        // нужная дистанция
+    if(losClear(player.x,player.y,cellCX(c),cellCY(r)))score+=1.5;       // будет видно, когда обернёшься
+    if(score>bs){bs=score;best=f;}
+  }
+  return best;
+}
+function makeArms(face){
+  const arms=[],n=7+Math.floor(rnd()*4);
+  for(let i=0;i<n;i++)arms.push({
+    s:jit(CELL*.72), z:8+rnd()*42, len:CELL*(1.0+rnd()*1.4),
+    ph:rnd()*6.283, sw:.6+rnd()*1.1, seg:8});
+  return arms;
+}
+function updWall(dt){
+  if(state!=='explore'&&state!=='mash')return;   // на полотне и в поимке ждём
+  wall.t+=dt;
+  if(wall.kind==='nest'||wall.kind==='lash'){    // уже схватило, просто держится в кадре
+    if(wall.t>=2.2&&state!=='mash')wall=null;
+    return;
+  }
+  // выпрыгивание в фазе 3: показалось, хлестнуло воздух и ушло. Пугает, но не хватает —
+  // иначе постоянные QTE превращают травлю в рутину.
+  if(wall.kind==='birth')return;                 // живут до конца катсцены рождения
+  if(wall.phase==='show'&&wall.t>=.9){wall.phase='strike';wall.t=0;sfx.whip();}
+  else if(wall.phase==='strike'&&wall.t>=WALL_STRIKE)wall=null;
+}
+function scatterMonster(){
+  let best=null,bd=-1;
+  for(const[r,c]of floors){const dd=dist2(cellCX(c),cellCY(r),player.x,player.y);if(dd>bd){bd=dd;best=[r,c];}}
+  monster.x=cellCX(best[1]);monster.y=cellCY(best[0]);
+}
+function grabScareRoll(src){
+  if(src==='monster'&&scareAllowed()&&monsterMayScare())return markLoud();
+  if(!scareAllowed())return false;
+  if(lastGrab)return false;
+  if(grabQuiet>=SCARE.grabPity)return markLoud();
+  const p=src==='monster'?.35:(SCARE.grab[src]!==undefined?SCARE.grab[src]:.3);
+  return rnd()<p?markLoud():false;
+}
+function startMash(label,need,time,onWin,onFail,src){
+  src=src||'wall';
+  const loud=grabScareRoll(src);
+  grabQuiet=loud?0:grabQuiet+1;
+  lastGrab=loud;
+  // Начинаем QTE с ЧИСТОГО пробела. Проверка «зажат ли» опирается на keys[...], а тот
+  // может залипнуть, если браузер потерял keyup (уход из окна, захват мыши). Залипший
+  // флаг отнял бы у игрока пробел целиком — здесь он стоит максимум одного нажатия.
+  keys['Space']=false;
+  mash={label,need,count:0,timeLeft:time,total:time,onWin,onFail,src:src,
+        loud:loud,t:0,hit:!loud,grip:.55,arms:makeFaceArms(loud?8:6)};
+  state='mash';
+  if(loud)duckAudio(.10);   // тот же приём, что у большого скримера: провал перед броском
+}
+// ============ СКРИМЕРЫ ============
+// Скример — событие, а не реакция на поимку. Если бить каждый раз, к третьему разу
+// это раздражение, а не страх (ровно этим болели щупальца, пока половина не начала
+// промахиваться). Поэтому право на скример КОПИТСЯ и тратится редко:
+//   - шанс зависит от того, КТО схватил: щупальца — фон, монстр — событие;
+//   - два подряд запрещены: случайность иногда сдваивает и обесценивает оба;
+//   - если подряд прошло SCARE.pity тихих поимок — следующая пугает обязательно,
+//     иначе невезучий игрок за весь забег не увидит ни одного;
+//   - шанс выше, когда игрок шёл ТИХО: на расслабленного удар ложится вдвое сильнее,
+//     а посреди погони ему уже нечего прибавить.
+// Тихая поимка при этом НЕ пустая. Будь она просто затемнением, игрок за три раза
+// выучил бы «это безопасный вид», и отсутствие скримера само стало бы сигналом
+// расслабиться. Разницу надо чувствовать, но не уметь назвать.
+const SCARE={
+  chance:{monster:.6,lash:.2,nest:.25,safe:.3,wall:.25},
+  calm:.25,          // прибавка к шансу, если игрок шёл тихо и не в погоне
+  pity:4,            // столько тихих поимок подряд — и следующая обязательно пугает
+  hit:.18,           // секунд полной тишины перед ударом
+  durQuiet:1.0, durBig:1.9, durFatal:2.6,
+};
+// Скример бывает и в МОМЕНТ ЗАХВАТА, а не только при поимке — но по своему бюджету
+// и с меньшим шансом: захватов в разы больше, чем поимок (QTE игрок обычно выигрывает).
+// И он короткий: экран не закрывается, QTE читается с первого кадра. Иначе игрок
+// проигрывает не потому, что испугался, а потому что не увидел, что жать.
+SCARE.grab={monster:1,lash:.3,nest:.35,safe:.3,wall:.3};
+SCARE.grabPity=3;
+SCARE.minGap=25;     // сек: жёсткий пол между любыми двумя скримерами
+SCARE.monCool=45;    // сек: как часто монстру позволено пугать по-настоящему
+// «Монстр пугает всегда» верно ровно один раз. В затяжной погоне он хватает игрока
+// раз за разом, и правило превращало каждую погоню в очередь криков — замер на
+// сидящем игроке: 199 захватов монстром, 73% со скримером. Ровно та усталость,
+// от которой всё это и лечили. Поэтому у него кулдаун: первый раз бьёт наверняка,
+// дальше — как все, пока не остынет. Общий потолок SCARE.minGap он тоже соблюдает:
+// без этого его крик мог лечь через 2.6 с после чужого — замерено.
+// Жёсткий потолок частоты. Счётчика «после 3 тихих — обязательно» мало: если события
+// идут плотно (затяжная погоня, лагерь в убежище), счётчик выбивается каждые 15 секунд
+// и скримеры снова превращаются в фон. Голодание, от которого он страхует, измеряется
+// ВРЕМЕНЕМ, а не количеством — значит и порог должен быть по времени.
+let lastLoudT=-999;
+function scareAllowed(){return tGlobal-lastLoudT>=SCARE.minGap;}
+function markLoud(){lastLoudT=tGlobal;return true;}
+let monScareT=-999;lastLoudT=-999;
+function monsterMayScare(){
+  if(tGlobal-monScareT<SCARE.monCool)return false;
+  monScareT=tGlobal;return true;
+}
+let grabQuiet=0, lastGrab=false;
+let scareQuiet=0;    // сколько поимок подряд прошло без скримера
+let lastScare=false; // предыдущая поимка была скримером
+let scare=null;      // активный скример
+
+function scareRoll(src){
+  // Монстр — исключение: он ловит игрока считаные разы за забег, и это кульминация
+  // всей трёхфазной арки. Если ополовинить её броском кубика, игрок может дойти
+  // до конца и ни разу не увидеть, чем всё это время пахло. Но только пока не остыл.
+  if(src==='monster'&&scareAllowed()&&monsterMayScare())return markLoud();
+  if(!scareAllowed())return false;
+  if(lastScare)return false;
+  if(scareQuiet>=SCARE.pity)return markLoud();
+  let p=src==='monster'?.5:(SCARE.chance[src]!==undefined?SCARE.chance[src]:.25);
+  if(noise<.3&&!chase)p+=SCARE.calm;
+  return rnd()<p?markLoud():false;
+}
+// Точки высыпаются не случайной кашей, а бредущими нитями: так это читается как
+// «кто-то доводит рисунок за тебя», а не как помехи на экране.
+function startScare(big,fatal,src){
+  const dur=fatal?SCARE.durFatal:(big?SCARE.durBig:SCARE.durQuiet);
+  scare={t:0,dur:dur,big:big,fatal:fatal,src:src,hit:false,strands:[]};
+  const nStr=big?(fatal?6:4):1, per=big?16:5;
+  const t0=SCARE.hit+(big?.15:.05), t1=dur*(fatal?.72:.62);
+  for(let k=0;k<nStr;k++){
+    let x=rnd()*VW, y=rnd()*VH, a=rnd()*Math.PI*2;
+    const pts=[];
+    for(let i=0;i<per;i++){
+      pts.push({x:x,y:y,at:t0+(t1-t0)*(k+i/per)/nStr});
+      a+=(rnd()-.5)*1.5;
+      const step=Math.min(VW,VH)*(.10+rnd()*.10);
+      x+=Math.cos(a)*step; y+=Math.sin(a)*step;
+      if(x<12||x>VW-12){a=Math.PI-a;x=clamp(x,12,VW-12);}
+      if(y<12||y>VH-12){a=-a;y=clamp(y,12,VH-12);}
+    }
+    scare.strands.push({col:PALETTE[Math.floor(rnd()*PALETTE.length)],pts:pts});
+  }
+  duckAudio(SCARE.hit);   // тишина перед ударом делает его вдвое сильнее при том же пике
+}
+function updScare(dt){
+  scare.t+=dt;
+  if(!scare.hit&&scare.t>=SCARE.hit){
+    scare.hit=true;
+    unduck();
+    if(scare.big){sfx.scream();if(scare.src==='monster'||scare.fatal)sfx.grind();}
+    else sfx.thud();
+  }
+}
+function caught(src){
+  src=src||'wall';
+  prog.deaths++;
+  prog.streak++;
+  if(src==='monster')prog.monKills++;
+  // ДВА СЧЁТА, И ЭТО НАМЕРЕННО.
+  // `streak` — поимки подряд чем угодно; сдал полотно — прощено, игрок продвинулся.
+  // `monKills` — поимки ИМЕННО монстром, и они НЕ прощаются ничем.
+  // Раньше был только первый, и до смерти от монстра дойти было почти нельзя:
+  // после каждой поимки его отбрасывает на другой конец карты, а любое сданное
+  // между делом полотно обнуляло счёт. Он главная угроза игры — значит именно он
+  // и должен убивать, а не только пугать.
+  const fatal=prog.streak>=DEATH_LIMIT||prog.monKills>=DEATH_LIMIT;
+  const big=fatal||scareRoll(src);
+  scareQuiet=big?0:scareQuiet+1;
+  lastScare=big;
+  wall=null;
+  state='caught';
+  startScare(big,fatal,src);
+  caughtT=scare.dur;
+  if(fatal)return;        // дальше — экран смерти, мир уже не важен
+  // Поимка теперь стоит ошибки безумия. Без цены первая же поимка учила игрока,
+  // что бояться нечего, и весь набранный страх схлопывался.
+  addMadness('Оно тебя достало.');
+  monster.mode='roam';
+  scatterMonster();
+  // Погоня НЕ отменяется: если это финальный забег к выходу, он продолжается после респавна.
+}
+function respawn(){
+  let best=SAFE[0],bd=Infinity;
+  for(const s of SAFE){const d=dist2(player.x,player.y,cellCX(s[1]),cellCY(s[0]));if(d<bd){bd=d;best=s;}}
+  player.x=cellCX(best[1]);player.y=cellCY(best[0]);
+  player.invuln=3;state='explore';thread.t=0;safeSit=0;
+  if(chase){
+    monster.mode='chase';monster.stun=1.5;   // финальный забег продолжается
+    say('Комната. Тишина. ...Слишком тихая. БЕГИ ДАЛЬШЕ.',4);
+  } else {
+    say('Ты очнулся в безопасной комнате. Оно где-то рядом.',4);
+  }
+  if(!ambushDone)ambushT=5;   // «безопасные» комнаты безопасны не полностью — один раз за игру
+}
+
+// ============ movement / world update ============
+// Поворот с клавиатуры — основной способ для ноутбука без мыши, поэтому быстрый.
+const TURN_SPEED=3.4;            // рад/с: разворот на 180° примерно за 0.9 с
+const TURN_BOOST=1.9;            // множитель при зажатом Shift: ~0.5 с
+const QUICK_TURN=Math.PI/.16;    // рывковый разворот по Q — за 0.16 с
+let quickTurn=0;                 // остаток рывкового разворота, рад
+let CA=1,SA=0;
+// Страховка от замуровывания: что бы ни загнало игрока в камень (катсцена, респавн,
+// будущая механика) — на следующем же кадре его выталкивает наружу. Мягкая блокировка
+// движения при живой камере — худший вид бага: игра выглядит рабочей и не отпускает.
+function unstick(){
+  if(!collides(player.x,player.y))return;
+  const [r,c]=toCell(player.x,player.y);
+  if(!isWall(r,c)&&!collides(cellCX(c),cellCY(r))){player.x=cellCX(c);player.y=cellCY(r);return;}
+  let best=null,bd=Infinity;
+  for(const [fr,fc] of floors){
+    if(collides(cellCX(fc),cellCY(fr)))continue;
+    const d=dist2(player.x,player.y,cellCX(fc),cellCY(fr));
+    if(d<bd){bd=d;best=[fr,fc];}
+  }
+  if(best){player.x=cellCX(best[1]);player.y=cellCY(best[0]);}
+}
+function movePlayer(dt){
+  unstick();
+  let fw=0,sd=0;
+  if(keys['KeyW'])fw+=1;
+  if(keys['KeyS'])fw-=1;
+  if(keys['KeyA'])sd-=1;
+  if(keys['KeyD'])sd+=1;
+  if(keys['ArrowUp'])fw+=1;
+  if(keys['ArrowDown'])fw-=1;
+  const ts=TURN_SPEED*((keys['ShiftLeft']||keys['ShiftRight'])?TURN_BOOST:1);
+  if(keys['ArrowLeft'])player.ang-=ts*dt;
+  if(keys['ArrowRight'])player.ang+=ts*dt;
+  if(quickTurn!==0){                         // рывковый разворот на 180° по Q
+    const s=Math.sign(quickTurn)*Math.min(Math.abs(quickTurn),QUICK_TURN*dt);
+    player.ang+=s;quickTurn-=s;
+  }
+  if(fw||sd){
+    const l=Math.hypot(fw,sd);fw/=l;sd/=l;
+    const vx=CA*fw-SA*sd, vy=SA*fw+CA*sd;    // вперёд=(CA,SA), вправо=(-SA,CA)
+    const sp=player.speed*dt;
+    tryMove(vx*sp,0);tryMove(0,vy*sp);
+    player.stepT-=dt;player.bob+=dt*9;
+    if(player.stepT<=0){player.stepT=.34;sfx.step();}
+  } else player.bob+=dt*1.5;
+}
+function collides(x,y){
+  const r=player.r;
+  for(const [ox,oy] of [[-r,-r],[r,-r],[-r,r],[r,r],[0,-r],[0,r],[-r,0],[r,0]]){
+    const [cr,cc]=toCell(x+ox,y+oy);
+    if(isWall(cr,cc))return true;
+  }
+  return false;
+}
+function tryMove(dx,dy){
+  if(!collides(player.x+dx,player.y+dy)){player.x+=dx;player.y+=dy;player.wallTouch=Math.max(0,player.wallTouch-0.016);}
+  else player.wallTouch+=0.016;
+}
+
+// Фазы 1–2: монстр внутри камня. Медленно подбирается к игроку сквозь стены,
+// но НИКОГДА не выходит на пол — останавливается у самой поверхности.
+// Слышен и панорамируется как обычно: это единственный способ понять, где он.
+function updInWall(dt){
+  monster.pathT-=dt;
+  if(monster.pathT<=0){
+    monster.pathT=.6;
+    const [mr,mc]=toCell(monster.x,monster.y);
+    // Камень стоит 1, пол — 9. Стены в лабиринте НЕ связаны между собой (внутренние
+    // блоки это острова), поэтому «только по камню» запирало его на месте.
+    // Так он плывёт внутри стен и лишь перескакивает коридоры в самых узких местах.
+    const b=bfs(mr,mc,1,9);
+    // Цель выбираем ТОЛЬКО по близости к игроку; стоимость пути нужна лишь как
+    // проверка достижимости. Если подмешать её в оценку, побеждает собственная
+    // клетка монстра (нулевая цена) и он стоит на месте.
+    let best=null,bd=Infinity;
+    if(rnd()<INWALL_WANDER){                 // иногда просто бродит по камню:
+      const reach=WALL_SKIN.filter(([r,c])=>isFinite(b.D[r][c]));   // подход не должен
+      if(reach.length)best=reach[Math.floor(rnd()*reach.length)];   // быть прямой линией
+    }
+    if(!best)for(const [r,c] of WALL_SKIN){
+      if(!isFinite(b.D[r][c]))continue;
+      const d=dist2(player.x,player.y,cellCX(c),cellCY(r));
+      if(d<bd){bd=d;best=[r,c];}
+    }
+    monster.path=best?pathTo(b.P,best[0],best[1]):null;
+    if(monster.path&&monster.path.length)monster.path.shift();
+  }
+  let step=INWALL_SPEED*dt;
+  while(step>0&&monster.path&&monster.path.length){
+    const [r,c]=monster.path[0];
+    const tx=cellCX(c),ty=cellCY(r);
+    const dx=tx-monster.x,dy=ty-monster.y,l=Math.hypot(dx,dy);
+    if(l<2){monster.path.shift();continue;}
+    const m=Math.min(step,l);
+    monster.x+=dx/l*m;monster.y+=dy/l*m;step-=m;
+  }
+}
+
+function updMonster(dt){
+  if(monster.mode==='gone')return;
+  if(monster.stun>0){monster.stun-=dt;return;}
+  if(monster.mode==='inwall'){updInWall(dt);return;}
+
+  // след для тела сороконожки — хвост тянется по пройденному пути
+  monster.trailT-=dt;
+  if(monster.trailT<=0){
+    monster.trailT=.045;
+    monster.trail.unshift([monster.x,monster.y]);
+    if(monster.trail.length>46)monster.trail.pop();
+  }
+
+  // Охота по прямой видимости — ТОЛЬКО в фазе 3. До активации монстр просто бродит:
+  // он присутствие, которое слышно, а не преследователь.
+  if(phase>=3){
+    monster.seeT-=dt;
+    if(monster.seeT<=0){
+      const step=.25;monster.seeT=step;
+      const dd=Math.sqrt(dist2(monster.x,monster.y,player.x,player.y));
+      const sees=dd<SIGHT_RANGE&&losClear(monster.x,monster.y,player.x,player.y);
+      if(monster.mode==='roam'&&sees){
+        monster.mode='hunt';monster.lost=0;monster.pathT=0;
+        duckAudio(.35);sfx.screech();say('Оно тебя увидело.',4);
+      } else if(monster.mode==='hunt'){
+        if(sees)monster.lost=0;
+        else{
+          monster.lost+=step;
+          if(monster.lost>=HUNT_LOSE){monster.mode='roam';monster.target=null;say('Оно потеряло след.',3);}
+        }
+      }
+    }
+  }
+
+  const freeMode = mStage()>=3;
+  if(monster.mode==='chase'||monster.mode==='hunt'||freeMode&&monster.mode==='roam'&&madness.anger>0){
+    monster.pathT-=dt;
+    if(monster.pathT<=0){
+      monster.pathT=.45;
+      const [mr,mc]=toCell(monster.x,monster.y);
+      const [pr,pc]=toCell(player.x,player.y);
+      // Сквозь камень он ходит НЕ всегда. Мера «далеко» — длина ОБХОДА ПО КОРИДОРАМ,
+      // а не прямая: в лабиринте прямая почти всегда мала, и порог по ней не срабатывал.
+      // Вблизи он честно идёт коридором; режет только в финале, когда обход длинный.
+      let cut=isWall(mr,mc);            // уже в камне — выбираться всё равно сквозь него
+      let b=null;
+      if(!cut){
+        b=bfs(mr,mc);                   // сначала пробуем коридорами
+        const dCorr=b.D[pr][pc];
+        if(!isFinite(dCorr)||(!!chase&&dCorr>CUT_FAR))cut=true;
+      }
+      if(cut)b=bfs(mr,mc,7);
+      monster.cutting=cut;
+      monster.path=isFinite(b.D[pr][pc])?pathTo(b.P,pr,pc):null;
+    }
+    const sp=(monster.mode==='chase'?146:monster.mode==='hunt'?HUNT_SPEED:110)+madness.anger*8;
+    followPath(sp*dt);
+  } else { // roam
+    if(!monster.target||dist2(monster.x,monster.y,monster.target[0],monster.target[1])<16){
+      const [mr,mc]=toCell(monster.x,monster.y);
+      let opts=[[0,1],[0,-1],[1,0],[-1,0]].map(([a,b])=>[mr+a,mc+b]).filter(([r,c])=>!isWall(r,c));
+      // не разворачиваться назад, пока есть куда идти: иначе получается топтание туда-сюда
+      const pv=monster.prev;
+      if(pv&&opts.length>1){
+        const fwd=opts.filter(([r,c])=>!(r===pv[0]&&c===pv[1]));
+        if(fwd.length)opts=fwd;
+      }
+      if(opts.length){
+        const t=opts[Math.floor(rnd()*opts.length)];
+        monster.prev=[mr,mc];
+        monster.target=[cellCX(t[1]),cellCY(t[0])];
+      }
+    }
+    if(monster.target){
+      const dx=monster.target[0]-monster.x,dy=monster.target[1]-monster.y,l=Math.hypot(dx,dy)||1;
+      const sp=(90+madness.anger*10)*dt;
+      monster.x+=dx/l*sp;monster.y+=dy/l*sp;
+    }
+  }
+  // catch check — из стены он не хватает, только вылезает
+  if(player.invuln<=0&&state==='explore'&&monster.mode!=='inwall'){
+    const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+    if((monster.mode==='chase'||monster.mode==='hunt')&&d<26){
+      sfx.grab();
+      startMash('ЖМИ ПРОБЕЛ! ВЫРЫВАЙСЯ!',12,3,
+        ()=>{monster.stun=2.2;player.invuln=2;say('Вырвался! Беги!');},
+        ()=>caught('monster'),'monster');
+    } else if(phase>=3&&monster.mode==='roam'&&mStage()>=3&&d<24){
+      caught('monster');
+    }
+  }
+}
+function followPath(step){
+  while(step>0&&monster.path&&monster.path.length){
+    const [r,c]=monster.path[0];
+    const tx=cellCX(c),ty=cellCY(r);
+    const dx=tx-monster.x,dy=ty-monster.y,l=Math.hypot(dx,dy);
+    if(l<2){monster.path.shift();continue;}
+    const m=Math.min(step,l);
+    monster.x+=dx/l*m;monster.y+=dy/l*m;step-=m;
+  }
+}
+
+// ============ ФАЗА 2: шум и глухота ============
+// Единственный сенсор игрока — слух. Шум его отбирает: чем больше игрок топает,
+// бьётся в QTE и жжёт вспышку, тем хуже слышно, где монстр.
+// Ходьба сама по себе НЕ должна выбивать фазу 2, иначе фаза 1 длится пять секунд
+// и вся арка со стенами проходит мимо игрока. Поэтому ходьба упирается в потолок
+// NOISE_WALK_CAP, а выше его гонят только громкие события: вспышка, QTE, осыпавшийся рисунок.
+const NOISE_MOVE=1.1, NOISE_DECAY=.34, NOISE_WALK_CAP=.55;
+function addNoise(v){noise=clamp(noise+v,0,1);noisePeak=Math.max(noisePeak,noise);}
+function updNoise(dt){
+  const moving=keys['KeyW']||keys['KeyS']||keys['KeyA']||keys['KeyD']||keys['ArrowUp']||keys['ArrowDown'];
+  const room=moving?Math.max(0,(NOISE_WALK_CAP-noise)/NOISE_WALK_CAP):0;
+  noise=clamp(noise+NOISE_MOVE*room*dt-NOISE_DECAY*dt,0,1);
+  noisePeak=Math.max(noisePeak*(1-dt*.15),noise);
+}
+// 1 — слышно нормально, 0.15 — почти глухота
+function hearing(){return phase<2?1:clamp(1-noise*.85,.15,1);}
+
+function updPhase(dt){
+  if(phase===1&&(madness.errors>=PH2_ERRORS||noisePeak>.85)){
+    phase=2;
+    duckAudio(.9);
+    say('В ушах зазвенело. Ты перестал слышать, где оно.',6);
+  }
+  // ВСТРЕЧА: он подобрался сквозь камень вплотную и рвёт стену наружу.
+  // Прямая видимость тут не нужна и не имеет смысла — он внутри стены.
+  if(phase<3&&!cut&&monster.mode==='inwall'&&monster.stun<=0&&state==='explore'
+     &&isWall(...toCell(monster.x,monster.y))){          // рвётся наружу только из камня
+    if(dist2(player.x,player.y,monster.x,monster.y)<PH3_MEET*PH3_MEET)startAwakening();
+  }
+}
+
+// ============ ЩУПАЛЬЦА ИЗ ЛЮБОЙ СТЕНЫ ============
+// Гнёзд всего NEST_COUNT на ~417 клеток пола — чтобы напороться, надо случайно наступить
+// на одну из них, и за несколько прохождений можно не встретить ни одной.
+// Поэтому есть отдельная угроза: стена может хлестнуть где угодно и когда угодно.
+// НЕ зависит ни от фазы, ни от безумия — безумие лишь учащает, но никогда не выключает.
+// Частота испугов та же, а QTE вдвое меньше: половина щупалец ПРОМАХИВАЕТСЯ.
+// Семь-восемь схваток за десять минут утомляли, а утомление убивает страх так же
+// надёжно, как скука. Промах пугает не слабее, но ничего не требует от игрока.
+// Было first[15,30]/repeat[55,95] — 6.3 удара за 10 минут. Игрок привыкал к ним
+// за один забег: пугает не сила удара, а его неожиданность, а к частому не бывает
+// неожиданности. Растянуто вдвое; редкость добирается разнообразием (скример на
+// захвате, промах, обхват лица), а не количеством.
+const LASH={first:[30,50],repeat:[110,180],missChance:.5};
+let lashT=rr(LASH.first);
+function updLash(dt){
+  if(state!=='explore')return;
+  // Таймер тикает ВСЕГДА. Раньше он стоял, пока слот стены занят выпрыгиванием или пока
+  // игрок в QTE/неуязвимости — а в фазе 3 это почти постоянно, и хлысты там пропадали вовсе.
+  lashT-=dt;
+  if(lashT>0)return;
+  if(cut||wall||mash||player.invuln>0){lashT=2;return;}   // занято — вернёмся через пару секунд
+  lashT=rr(LASH.repeat)*(1-mStage()*.08);      // хуже лабиринт — чаще, но никогда не выключено
+  const face=wallSpotBehind();
+  if(!face){lashT=4;return;}                   // рядом нет стены — попробуем чуть позже
+  const miss=rnd()<LASH.missChance;
+  wall={n:0,kind:'lash',face,arms:makeArms(face),t:0,phase:'strike'};
+  duckAudio(.2);
+  addNoise(miss?.2:.35);
+  if(miss){                                  // хлестнуло мимо — только испуг
+    sfx.whip();sfx.screech();
+    player.invuln=1.2;
+    say('Хлестнуло у самого лица.',3);
+  } else {
+    sfx.grab();sfx.screech();
+    startMash('ЩУПАЛЬЦА ИЗ СТЕНЫ! ЖМИ ПРОБЕЛ!',12,2.8,
+      ()=>{player.invuln=2;say('Вырвался. Стена снова притворилась стеной.',4);},
+      ()=>caught('lash'),'lash');
+  }
+}
+
+// ============ ФАЗА 1: гнёзда щупалец в стенах ============
+let nestsHit=0;
+function updNests(dt){
+  if(cut||wall||state!=='explore'||player.invuln>0)return;
+  // первое гнездо требует подойти вплотную — дальше хватает пройти мимо
+  const reach=nestsHit===0?CELL*1.15:CELL*2.1;
+  for(const d of DECOR){
+    if(d.kind!=='nest'||d.used)continue;
+    if(dist2(player.x,player.y,d.x,d.y)>reach*reach)continue;
+    if(!losClear(player.x,player.y,d.x,d.y))continue;
+    d.used=true;
+    if(nestsHit===0)startNestCutscene(d);   // первый раз — короткая катсцена
+    else nestStrike(d);                     // дальше бьёт без предупреждения
+    nestsHit++;
+    return;
+  }
+}
+// Катсцена нарочно очень короткая: длинную игрок запоминает и перестаёт бояться.
+function startNestCutscene(d){
+  const ang=Math.atan2(d.y-player.y,d.x-player.x);
+  cut={kind:'nest',t:0,dur:.75,decor:d,
+    ang0:player.ang,angTo:ang,x0:player.x,y0:player.y,
+    tx:player.x+(d.x-player.x)*.30,ty:player.y+(d.y-player.y)*.30};
+  duckAudio(.7);
+}
+function nestStrike(d){
+  wall={n:0,kind:'nest',face:d,arms:makeArms(d),t:0,phase:'strike'};
+  sfx.grab();sfx.screech();
+  addNoise(.4);
+  startMash('ЩУПАЛЬЦА! ЖМИ ПРОБЕЛ!',12,2.6,
+    ()=>{player.invuln=2;say('Вырвался. Оно уползло обратно в стену.',4);},
+    ()=>caught('nest'),'nest');
+}
+function updCut(dt){
+  cut.t+=dt;
+  const p=clamp(cut.t/cut.dur,0,1), e=p*p*(3-2*p);
+  let da=cut.angTo-cut.ang0;
+  while(da>Math.PI)da-=Math.PI*2; while(da<-Math.PI)da+=Math.PI*2;
+  player.ang=cut.ang0+da*e;
+  // Двигаем ТОЛЬКО туда, где не упрёмся в камень. Раньше катсцена гнезда толкала
+  // игрока на 45% к грани стены напрямую — с радиусом 11 он оказывался внутри стены
+  // и после QTE не мог сделать ни шага: камера крутится, ходьба мертва.
+  const nx=cut.x0+(cut.tx-cut.x0)*e, ny=cut.y0+(cut.ty-cut.y0)*e;
+  if(!collides(nx,player.y))player.x=nx;
+  if(!collides(player.x,ny))player.y=ny;
+  if(cut.t>=cut.dur){
+    const k=cut.kind, d=cut.decor;
+    if(k==='wake'){wakeMonster();cut=null;}      // wakeMonster читает cut.spot
+    else{cut=null;if(k==='nest')nestStrike(d);}
+  }
+}
+
+// ============ ФАЗА 3: пробуждение и травля ============
+// Ищем клетку пола рядом с монстром — оттуда он и вылезет, на глазах у игрока.
+function birthSpot(){
+  const [mr,mc]=toCell(monster.x,monster.y);
+  let best=null,bd=Infinity;
+  for(const [dr,dc] of DIRS4){
+    const r=mr+dr,c=mc+dc;
+    if(isWall(r,c))continue;
+    const d=dist2(player.x,player.y,cellCX(c),cellCY(r));
+    if(d<bd){bd=d;best=[r,c];}
+  }
+  if(best)return best;
+  const [pr,pc]=toCell(player.x,player.y);      // запасной: собственная клетка игрока
+  return isWall(pr,pc)?null:[pr,pc];
+}
+function startAwakening(){
+  const spot=birthSpot();
+  const bx=spot?cellCX(spot[1]):monster.x, by=spot?cellCY(spot[0]):monster.y;
+  const face=wallFaceOf(spot||toCell(player.x,player.y));
+  if(face){                                     // из стены сразу лезут щупальца
+    wall={n:0,kind:'birth',face,arms:makeArms(face),t:0,phase:'show'};
+  }
+  cut={kind:'wake',t:0,dur:1.3,
+    ang0:player.ang,angTo:Math.atan2(by-player.y,bx-player.x),
+    x0:player.x,y0:player.y,tx:player.x,ty:player.y,spot};
+  monster.stun=4;
+  duckAudio(1.1);
+  sfx.screech();
+}
+function wakeMonster(){
+  phase=3;
+  const spot=cut&&cut.spot;
+  if(spot){monster.x=cellCX(spot[1]);monster.y=cellCY(spot[0]);}
+  monster.trail=[];                             // тело сороконожки собирается заново
+  monster.mode='chase';monster.stun=.5;monster.chaseT=7;
+  monster.burstT=rr(HAUNT.burst);
+  wall=null;
+  sfx.screech();sfx.grab();
+  say('Стена лопнула. Оно вышло. ТЕПЕРЬ ОНО ЗНАЕТ, ГДЕ ТЫ.',6);
+}
+const HAUNT={
+  burst:[13,24],     // пауза между «выпрыгиваниями» из стен рядом (было 7–14: примелькалось)
+  chaseLen:[5,9],    // сколько длится короткая погоня
+  chasePause:[9,18], // пауза между погонями
+  safeLimit:7,       // сек в убежище, после которых оно ломает стену
+};
+let safeSit=0;
+function updHaunt(dt){
+  // короткие погони: рвётся к игроку, потом отпускает — чтобы не превращаться в фон
+  monster.chaseT-=dt;
+  if(monster.chaseT<=0){
+    if(monster.mode==='chase'&&!chase){
+      monster.mode='roam';monster.target=null;
+      monster.chaseT=rr(HAUNT.chasePause);
+      say('Оно отстало. Пока.',3);
+    } else if(monster.mode==='roam'){
+      monster.mode='chase';monster.pathT=0;
+      monster.chaseT=rr(HAUNT.chaseLen);
+      duckAudio(.3);sfx.screech();say('Оно опять сорвалось.',3);
+    } else monster.chaseT=rr(HAUNT.chasePause);
+  }
+  // выпрыгивание из стены рядом: напоминание, что оно здесь
+  monster.burstT-=dt;
+  if(monster.burstT<=0&&!wall&&!cut){
+    monster.burstT=rr(HAUNT.burst);
+    const f=wallSpotBehind();
+    if(f){
+      wall={n:0,kind:'burst',face:f,arms:makeArms(f),t:0,phase:'show'};
+      duckAudio(.25);sfx.whip();sfx.skitter(.8,monsterPan());
+    }
+  }
+  // убежище безопасно не полностью: пересидеть не выйдет
+  let inSafe=false;
+  for(const s of SAFE) if(dist2(player.x,player.y,cellCX(s[1]),cellCY(s[0]))<(CELL*.9)**2)inSafe=true;
+  safeSit=inSafe?safeSit+dt:0;
+  if(safeSit>=HAUNT.safeLimit&&!mash&&player.invuln<=0){
+    safeSit=0;sfx.grab();duckAudio(.2);
+    startMash('СТЕНА УБЕЖИЩА ТРЕСНУЛА! ЖМИ ПРОБЕЛ!',12,3,
+      ()=>{player.invuln=2;say('Щупальце ушло в пролом. Здесь тоже не спрятаться.',4);},
+      ()=>caught('safe'),'safe');
+  }
+}
+
+function updExplore(dt){
+  if(cut){updCut(dt);return;}   // катсцена держит управление
+  movePlayer(dt);
+  updMonster(dt);
+  updThread(dt);
+  updMonLine(dt);
+  updChase(dt);
+  markVisited();
+  if(player.invuln>0)player.invuln-=dt;
+  if(!flash.charged){flash.cd-=dt;if(flash.cd<=0){flash.charged=true;say('Палочка снова полна света.');}}
+
+  if(prog.done<N_CANV){
+    const t=CANV[prog.done];
+    const nearC=dist2(player.x,player.y,cellCX(t[1]),cellCY(t[0]))<(CELL*.9)**2;
+    if(nearC&&canvasArm)startDraw(prog.done,false);
+    if(!nearC)canvasArm=true;
+  }
+  if(!guide.used&&dist2(player.x,player.y,cellCX(GUIDE[1]),cellCY(GUIDE[0]))<(CELL*.9)**2)startDraw(0,true);
+  if(guide.trailT>0)guide.trailT-=dt;
+
+  if(!hasWand){                              // не дать растеряться в полной темноте
+    wandHintT+=dt;
+    if(wandHintT>5&&msgT<=0)say('Обернись. Что-то лежит позади тебя.',4);
+  }
+  updNoise(dt);
+  updPhase(dt);
+  updNests(dt);
+  updLash(dt);
+  if(phase>=3)updHaunt(dt);
+  // финальный забег заканчивается только выходом — проверка победы ниже
+  if(ambushT>0){
+    ambushT-=dt;
+    if(ambushT<=0&&!ambushDone){
+      ambushDone=true;sfx.grab();
+      startMash('СТЕНА ТРЕСНУЛА! ЖМИ ПРОБЕЛ!',12,3,
+        ()=>{say('Щупальце ушло обратно в пролом.',4);},
+        ()=>caught('safe'),'safe');
+    }
+  }
+  if(mStage()>=2&&player.wallTouch>1.6&&player.invuln<=0){
+    player.wallTouch=0;sfx.grab();
+    startMash('СТЕНА ЖИВАЯ! ЖМИ ПРОБЕЛ!',10,3,
+      ()=>{player.invuln=2;say('Стена отпустила. Не прижимайся к ним.',4);},
+      ()=>caught('wall'),'wall');
+  }
+  if(prog.done>=N_CANV&&dist2(player.x,player.y,cellCX(EXIT[1]),cellCY(EXIT[0]))<(CELL*.9)**2){
+    say('Выхода нет. Есть стена. Нарисуй дверь.',5);
+    startDraw(0,false,true);
+  }
+
+  const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+  sndSkitT-=dt;
+  if(sndSkitT<=0&&monster.mode!=='gone'){
+    const g=clamp(1-d/(CELL*10),0,1)*hearing();   // шум игрока глушит монстра
+    if(g>0.02)sfx.skitter(g,monsterPan());
+    sndSkitT=.5+rnd()*1.2-madness.anger*.05;
+  }
+  sndHeartT-=dt;
+  if(sndHeartT<=0&&d<CELL*5){sfx.heart(clamp(1-d/(CELL*5),0,1)*.5);sndHeartT=clamp(d/(CELL*5),.3,1)*1.1;}
+  // звон в ушах — слышимая причина, почему монстра перестало быть слышно
+  if(phase>=2&&noise>.45){
+    sndRingT-=dt;
+    if(sndRingT<=0){sndRingT=.5;tone(3100+jit(120),.45,.035*noise,'sine');}
+  }
+  // дыхание: чем ближе монстр и чем хуже лабиринт, тем чаще и тяжелее
+  const scare=clamp(1-d/(CELL*8),0,1)*.7+mStage()*.18+(chase?.5:0);
+  sndBreathT-=dt;
+  if(sndBreathT<=0){
+    if(scare>.15)sfx.breath(clamp(scare,0,1));
+    sndBreathT=clamp(3.4-scare*2.4,.9,4);
+  }
+}
+// -1 слева, +1 справа — проекция направления на монстра на вектор «вправо» от игрока
+function monsterPan(){
+  const dx=monster.x-player.x, dy=monster.y-player.y, l=Math.hypot(dx,dy)||1;
+  return clamp((dx*-Math.sin(player.ang)+dy*Math.cos(player.ang))/l,-1,1);
+}
+
+// время вышло: рисунок осыпается, страх копится и тряханёт следующую попытку
+function timeoutDraw(){
+  addError('Время вышло.');
+  prog.fear=Math.min(FEAR_MAX,prog.fear+FEAR_STEP);
+  draw.dissolve=DISSOLVE_T;
+  draw.tent=null;
+  addNoise(.45);   // осыпавшийся рисунок гремит
+  for(const d of draw.dots){d.vx=jit(260);d.vy=40+rnd()*200;}
+  say('Рисунок осыпался. Руки будут трястись сильнее: ×'+prog.fear.toFixed(1),4.5);
+}
+
+// щупальце выхлёстывает из-за края картины и накрывает нужную точку
+function spawnTentacle(){
+  const target=draw.dots.find(d=>d.idx===draw.next&&!d.done);
+  if(!target){draw.tentT=rr(TENT.repeat);return;}
+  const arms=[],n=TENT.arms[0]+Math.floor(rnd()*(TENT.arms[1]-TENT.arms[0]+1));
+  for(let i=0;i<n;i++)arms.push({off:jit(90),bow:jit(2.2),ph:rnd()*6.283,sw:.8+rnd()*1.2});
+  draw.tent={dot:draw.next,phase:'in',t:0,life:rr(TENT.cover),
+    edge:Math.floor(rnd()*4),along:.15+rnd()*.7,arms};
+  draw.tentT=0;
+  sfx.whip();
+}
+function updTentacle(dt){
+  if(!draw.tentOk)return;          // на этом полотне щупалец нет
+  const c=draw.tent;
+  if(!c){
+    draw.tentT-=dt;
+    if(draw.tentT<=0)spawnTentacle();
+    return;
+  }
+  c.t+=dt;
+  const target=draw.dots.find(d=>d.idx===c.dot);
+  if(c.phase!=='out'&&(!target||target.done)){c.phase='out';c.t=0;return;}
+  if(c.phase==='in'&&c.t>=TENT.strike){c.phase='hold';c.t=0;}
+  else if(c.phase==='hold'&&c.t>=c.life){c.phase='out';c.t=0;}
+  else if(c.phase==='out'&&c.t>=TENT.strike){
+    draw.tent=null;
+    draw.tentT=phase>=3?rr([3,5.5]):rr(TENT.repeat);  // в фазе 3 чаще, но передышка есть
+  }
+}
+// насколько точка сейчас перекрыта: 0 — открыта, 1 — накрыта целиком
+function tentCover(){
+  const c=draw&&draw.tent;
+  if(!c)return 0;
+  if(c.phase==='hold')return 1;
+  const p=clamp(c.t/TENT.strike,0,1);
+  return c.phase==='in'?p:1-p;
+}
+function tentBlocks(idx){
+  const c=draw&&draw.tent;
+  return !!c&&c.dot===idx&&tentCover()>=TENT.block;
+}
+
+// Ставим его на FINAL.dist клеток обхода по коридорам. Игрок его сейчас не видит —
+// экран занят полотном, — так что перестановка незаметна, а расстояние честное.
+function placeFinalMonster(){
+  const [pr,pc]=toCell(player.x,player.y);
+  const b=bfs(pr,pc);
+  let best=null,bd=-1;
+  for(const [r,c] of floors){
+    const d=b.D[r][c];
+    if(!isFinite(d)||d>FINAL.dist)continue;
+    if(d>bd){bd=d;best=[r,c];}
+  }
+  if(best){monster.x=cellCX(best[1]);monster.y=cellCY(best[0]);}
+  monster.mode='chase';monster.stun=0;monster.path=null;monster.pathT=0;monster.trail=[];
+  draw.finStart=Math.max(1,bd);
+  draw.near=0;
+}
+// Он идёт по коридору, а не сквозь камень: игроку важно понимать, что тот приближается
+// честно и что у него есть ровно столько времени, сколько монстру идти.
+function updFinalMonster(dt){
+  monster.pathT-=dt;
+  const [pr,pc]=toCell(player.x,player.y);
+  const [mr,mc]=toCell(monster.x,monster.y);
+  if(monster.pathT<=0){
+    monster.pathT=.4;
+    // ТОЛЬКО по коридорам, пока он на полу. Взвешенный поиск (стена стоит 7) я поставил
+    // сюда, чтобы он выбрался, если его занесло в камень, — но он на нём же и срезал
+    // сквозь тонкие стены, и обещанный запас времени превращался в вдвое меньший.
+    // Замер до правки: дверь срывалась в 7 случаях из 25 даже при секунде на точку.
+    let b=isWall(mr,mc)?bfs(mr,mc,7):bfs(mr,mc);
+    if(!isFinite(b.D[pr][pc]))b=bfs(mr,mc,7);   // коридором не дойти — только тогда сквозь камень
+    monster.path=isFinite(b.D[pr][pc])?pathTo(b.P,pr,pc):null;
+    if(monster.path&&monster.path.length)monster.path.shift();
+  }
+  followPath(FINAL.speed*dt);
+  const bb=bfs(pr,pc);
+  const cur=bb.D[mr][mc];
+  draw.near=clamp(1-(isFinite(cur)?cur:draw.finStart)/draw.finStart,0,1);
+  const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+  // Забирает, только если ДЕЙСТВИТЕЛЬНО дошёл. Одной близости по прямой мало: в лабиринте
+  // он может стоять за тонкой стеной в двух шагах и по обходу быть ещё далеко. Замер без
+  // этой проверки: 5 провалов из 20 при совершенно нормальном темпе рисования.
+  if(d<FINAL.reach&&losClear(player.x,player.y,monster.x,monster.y)){
+    exitDraw();
+    caught('monster');
+  }
+}
+function updDraw(dt){
+  if(draw.penT>0)draw.penT-=dt;
+  if(draw.dissolve>0){
+    draw.dissolve-=dt;
+    if(draw.dissolve<=0){startDraw(draw.shapeIdx,false);return;} // то же полотно, точки заново
+    return;
+  }
+  if(draw.final){
+    updFinalMonster(dt);
+    if(state!=='draw')return;        // он забрал игрока прямо за работой
+  } else if(!draw.isGuide){
+    draw.timeLeft-=dt;
+    if(draw.timeLeft<10&&Math.floor(draw.timeLeft*2)!==Math.floor((draw.timeLeft+dt)*2))sfx.tick();
+    if(draw.timeLeft<=0){timeoutDraw();return;}
+    updTentacle(dt);
+  }
+  const d=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y));
+  sndSkitT-=dt;
+  if(sndSkitT<=0&&monster.mode!=='gone'){
+    sfx.skitter(clamp(1-d/(CELL*14),0.06,1),monsterPan());
+    sndSkitT=.35+rnd()*.9;
+  }
+  // Монстр НЕ движется, пока игрок рисует — КРОМЕ финала, где он и есть таймер.
+  // Раньше он подходил на половинной скорости и хватал сразу на выходе — доделать
+  // рисунок означало попасться. Слышно его по-прежнему, просто расстояние не меняется.
+}
+
+function updMash(dt){
+  mash.timeLeft-=dt;
+  mash.t+=dt;
+  if(!mash.hit&&mash.t>=.10){
+    mash.hit=true;unduck();sfx.lunge();
+    if(mash.src==='monster')sfx.grind();
+  }
+  // Хватка ползёт со временем и отступает от каждого нажатия. Это тот же прогресс,
+  // что и полоска, но его видно на себе: щупальца отпускают лицо, а не бар полнеет.
+  // Отпускание НЕЛИНЕЙНОЕ (степень 1.7). При линейном щупальца слетали с лица за первые
+  // же нажатия — борьба заканчивалась раньше, чем игрок успевал её увидеть. Теперь они
+  // держат почти до конца и срываются на последних ударах.
+  mash.grip=clamp(.55+.80*(1-mash.timeLeft/mash.total)
+                  -.95*Math.pow(clamp(mash.count/mash.need,0,1),1.7),0,1);
+  if(mash.count>=mash.need){const f=mash.onWin;mash=null;state='explore';f();}
+  else if(mash.timeLeft<=0){const f=mash.onFail;mash=null;f();}
+}
+
+// Три поимки подряд — конец. Без этого игрока можно ловить бесконечно,
+// и смерть перестаёт что-либо значить.
+function gameOver(){
+  state='over';
+  releaseMouse();
+  duckAudio(.8);   // звук отдал скример перед этим — второй удар только смазал бы его
+  const t=Math.round(tGlobal-prog.startTime);
+  document.getElementById('overStats').textContent=
+    'Продержался: '+Math.floor(t/60)+' мин '+(t%60)+' сек · Полотен: '+prog.done+'/'+N_CANV+
+    ' · Ошибок: '+madness.errors+
+    (prog.monKills>=DEATH_LIMIT?' · Оно достало тебя трижды':' · Три поимки подряд');
+  document.getElementById('overOv').classList.remove('hidden');
+}
+function win(){
+  state='win';
+  releaseMouse();
+  const t=Math.round(tGlobal-prog.startTime);
+  document.getElementById('winStats').textContent=
+    'Время: '+Math.floor(t/60)+' мин '+(t%60)+' сек · Ошибки: '+madness.errors+
+    ' · Поимки: '+prog.deaths+' · Оно достало тебя: '+prog.monKills;
+  document.getElementById('winOv').classList.remove('hidden');
+}
+
+// ============ 3D: проекция, свет, видимость ============
+const cam={x:0,y:0,ang:0,eye:EYE};
+let pitchOff=0;
+
+const LIGHT_RANGE=CELL*7;
+const CONE_IN=.22, CONE_OUT=.45;   // уже, чем FOV — по краям экрана должна быть темнота
+const AMB_R=CELL*1.6;   // слабое свечение вокруг игрока
+
+function lightAt(x,y){
+  const dx=x-cam.x, dy=y-cam.y;
+  const d=Math.hypot(dx,dy)||.001;
+  const f=(dx*CA+dy*SA)/d;                       // косинус угла к взгляду
+  const a=Math.acos(clamp(f,-1,1));
+  const cone=1-clamp((a-CONE_IN)/(CONE_OUT-CONE_IN),0,1);
+  let fall=clamp(1-d/LIGHT_RANGE,0,1); fall*=fall;
+  const amb=clamp(1-d/AMB_R,0,1)*.35;
+  // Без палочки фонаря нет вообще. Оставляем только слабейший ореол вокруг игрока,
+  // чтобы экран не был абсолютно чёрным — но идти по нему нельзя, надо взять палочку.
+  if(!hasWand)return clamp(amb*.5,0,1);
+  const dim=flash.charged?1:.5;                  // во время перезарядки свет вдвое тусклее
+  return clamp(cone*fall*dim+amb,0,1);
+}
+// луч по клеткам: не перекрыта ли точка стеной
+function losClear(x1,y1,x2,y2){
+  const dx=x2-x1, dy=y2-y1;
+  const d=Math.hypot(dx,dy);
+  if(d<2)return true;
+  const steps=Math.ceil(d/(CELL*.34));           // шаг меньше клетки — стену не перепрыгнем
+  for(let i=1;i<steps;i++){
+    const t=i/steps;
+    if(isWall(...toCell(x1+dx*t,y1+dy*t)))return false;
+  }
+  return true;
+}
+function visible(tx,ty){return losClear(cam.x,cam.y,tx,ty);}
+// точка мира -> экран (null, если за ближней плоскостью)
+function pt3(x,y,z){
+  const dx=x-cam.x, dy=y-cam.y;
+  const f=dx*CA+dy*SA;
+  if(f<NEAR)return null;
+  const r=-dx*SA+dy*CA;
+  return [VW/2+r/f*FOCAL, VH/2+pitchOff+(cam.eye-z)/f*FOCAL, f];
+}
+
+// ---- батчинг линий по яркости ----
+const LB=8;
+let buckets=[],tainted=[];
+function initBuckets(){buckets=[];tainted=[];for(let i=0;i<LB;i++){buckets.push([]);tainted.push([]);}}
+// taint=true — камень рядом с монстром: он и монстр из одной массы, и она откликается
+function pushSeg(x1,y1,x2,y2,l,taint){
+  if(l<=.012)return;
+  if((x1<-120&&x2<-120)||(x1>VW+120&&x2>VW+120))return;
+  if((y1<-400&&y2<-400)||(y1>VH+400&&y2>VH+400))return;
+  (taint?tainted:buckets)[Math.min(LB-1,Math.floor(l*LB))].push(x1,y1,x2,y2);
+}
+function flushSegs(){
+  ctx.lineWidth=1.4;ctx.lineCap='round';
+  for(let k=0;k<LB;k++){
+    const arr=buckets[k];if(!arr.length)continue;
+    ctx.strokeStyle='rgba(206,202,190,'+((k+1)/LB*.9).toFixed(3)+')';
+    ctx.beginPath();
+    for(let i=0;i<arr.length;i+=4){ctx.moveTo(arr[i],arr[i+1]);ctx.lineTo(arr[i+2],arr[i+3]);}
+    ctx.stroke();
+  }
+  // заражённый камень светится тем же зелёным, что и монстр
+  ctx.lineWidth=1.8;
+  for(let k=0;k<LB;k++){
+    const arr=tainted[k];if(!arr.length)continue;
+    const a=(k+1)/LB;
+    ctx.strokeStyle='rgba('+Math.round(120-a*46)+','+Math.round(210+a*30)+','+Math.round(150-a*20)+','+(a*.95).toFixed(3)+')';
+    ctx.beginPath();
+    for(let i=0;i<arr.length;i+=4){ctx.moveTo(arr[i],arr[i+1]);ctx.lineTo(arr[i+2],arr[i+3]);}
+    ctx.stroke();
+  }
+  ctx.lineWidth=1.4;
+}
+// отрезок между двумя вершинами (одинаковая высота z) с отсечением по ближней плоскости
+function segScr(a,b,z){
+  let af=a.f,ar=a.r,bf=b.f,br=b.r;
+  if(af<NEAR&&bf<NEAR)return null;
+  if(af<NEAR){const t=(NEAR-af)/(bf-af);ar=ar+(br-ar)*t;af=NEAR;}
+  else if(bf<NEAR){const t=(NEAR-bf)/(af-bf);br=br+(ar-br)*t;bf=NEAR;}
+  return [VW/2+ar/af*FOCAL, VH/2+pitchOff+(cam.eye-z)/af*FOCAL,
+          VW/2+br/bf*FOCAL, VH/2+pitchOff+(cam.eye-z)/bf*FOCAL];
+}
+
+const SUB=2;                 // делений на грань стены
+const FACES=[[-1,0],[1,0],[0,-1],[0,1]];
+let dotSpray=[];             // стадия 3: стены рассыпаются в точки
+
+function vtx(x,y,px,py){
+  const dx=x-cam.x,dy=y-cam.y;
+  const l=lightAt(px,py);
+  const vis=l>.012?visible(px,py):false;
+  return {f:dx*CA+dy*SA, r:-dx*SA+dy*CA, l:vis?l:0};
+}
+
+function renderWalls(st){
+  // Камень чуть дышит ВСЕГДА, а не только на высоком безумии: неподвижный каркас
+  // читается как чертёж, лёгкое дрожание — как живая масса. На стадии 2+ добавляется поверх.
+  const wob=(st>=2?(1.2+st*.6):0)+.35+Math.sin(tGlobal*.8)*.15;
+  const [pr,pc]=toCell(cam.x,cam.y);
+  const RC=Math.ceil(LIGHT_RANGE/CELL)+1;
+  const r0=Math.max(0,pr-RC),r1=Math.min(ROWS-1,pr+RC);
+  const c0=Math.max(0,pc-RC),c1=Math.min(COLS-1,pc+RC);
+  const W=(v)=>wob?v+jit(wob):v;
+
+  for(let r=r0;r<=r1;r++)for(let c=c0;c<=c1;c++){
+    if(grid[r][c]!==1){
+      // слабая разметка пола: северное и западное ребро клетки (каждое ребро — один раз)
+      const x0=c*CELL,y0=r*CELL;
+      floorEdge(x0,y0,x0+CELL,y0);
+      floorEdge(x0,y0,x0,y0+CELL);
+      if(visited.has(r*COLS+c))markSpot(r,c);   // здесь уже был — палочка оставила метку
+      continue;
+    }
+    for(const [dr,dc] of FACES){
+      if(isWall(r+dr,c+dc))continue;             // грань смотрит в стену — не рисуем
+      // концы грани в плане
+      let ax,ay,bx,by;
+      if(dr===-1){ax=c*CELL;ay=r*CELL;bx=(c+1)*CELL;by=r*CELL;}
+      else if(dr===1){ax=c*CELL;ay=(r+1)*CELL;bx=(c+1)*CELL;by=(r+1)*CELL;}
+      else if(dc===-1){ax=c*CELL;ay=r*CELL;bx=c*CELL;by=(r+1)*CELL;}
+      else {ax=(c+1)*CELL;ay=r*CELL;bx=(c+1)*CELL;by=(r+1)*CELL;}
+      const ox=dc*-2, oy=dr*-2;                  // сдвиг пробы на сторону пола
+      // Камень рядом с монстром — это он сам: одна масса. Она светится и дрожит.
+      // Только с фазы 3: до неё он прячется в стенах, и подсветка выдала бы его.
+      // Край заражения рваный, а не круглый: у самой туши светится всегда,
+      // дальше — всё реже. Ровная окружность читалась бы как выключатель.
+      let taint=false;
+      if(phase>=3&&monster.mode!=='gone'){
+        const td=Math.sqrt(dist2((ax+bx)/2,(ay+by)/2,monster.x,monster.y))/TAINT_R;
+        taint=td<1&&rnd()<clamp((1-td)*1.7,0,1);
+      }
+      const J=taint?(v)=>v+jit(3.2):W;
+      const vs=[];let any=false;
+      for(let i=0;i<=SUB;i++){
+        const t=i/SUB, x=ax+(bx-ax)*t, y=ay+(by-ay)*t;
+        const v=vtx(x,y,x+ox,y+oy);
+        if(v.l>0)any=true;
+        vs.push(v);
+      }
+      if(!any)continue;
+      for(let i=0;i<SUB;i++){
+        const l=(vs[i].l+vs[i+1].l)/2;
+        if(l<=.012)continue;
+        let s=segScr(vs[i],vs[i+1],0);
+        if(s)pushSeg(J(s[0]),J(s[1]),J(s[2]),J(s[3]),l,taint);
+        s=segScr(vs[i],vs[i+1],WALL_H);
+        if(s)pushSeg(J(s[0]),J(s[1]),J(s[2]),J(s[3]),l,taint);
+      }
+      // вертикальные рёбра по углам грани
+      for(const i of [0,SUB]){
+        const v=vs[i];
+        if(v.l<=.012||v.f<NEAR)continue;
+        const sx=VW/2+v.r/v.f*FOCAL;
+        pushSeg(J(sx),VH/2+pitchOff+cam.eye/v.f*FOCAL,J(sx),VH/2+pitchOff+(cam.eye-WALL_H)/v.f*FOCAL,v.l,taint);
+        if(st>=3&&v.f<CELL*5){
+          for(let k=0;k<3;k++)
+            dotSpray.push([sx+jit(26),VH/2+pitchOff+(cam.eye-rnd()*WALL_H)/v.f*FOCAL,clamp(2.4*(CELL*3/v.f),1,5),v.l]);
+        }
+      }
+    }
+  }
+}
+// метка «здесь уже был» — маленький крестик из чернил на полу
+function markSpot(r,c){
+  const x=cellCX(c),y=cellCY(r);
+  const l=lightAt(x,y)*.55;
+  if(l<=.02||!visible(x,y))return;
+  const s=CELL*.12;
+  const a=pt3(x-s,y-s,1),b=pt3(x+s,y+s,1),d=pt3(x-s,y+s,1),e=pt3(x+s,y-s,1);
+  if(a&&b)pushSeg(a[0],a[1],b[0],b[1],l);
+  if(d&&e)pushSeg(d[0],d[1],e[0],e[1],l);
+}
+function floorEdge(x1,y1,x2,y2){
+  const mx=(x1+x2)/2,my=(y1+y2)/2;
+  const l=lightAt(mx,my)*.32;
+  if(l<=.012||!visible(mx,my))return;
+  const a=pt3(x1,y1,0),b=pt3(x2,y2,0);
+  if(a&&b)pushSeg(a[0],a[1],b[0],b[1],l);
+}
+
+// ---- полилиния по полу (нить, тропа, линия побега) ----
+function floorPath(cells,style,width,dash,z){
+  if(!cells||cells.length<2)return;
+  ctx.strokeStyle=style;ctx.lineWidth=width;
+  if(dash)ctx.setLineDash(dash);
+  ctx.beginPath();
+  let pen=false;
+  for(const [r,c] of cells){
+    const p=pt3(cellCX(c),cellCY(r),z||1.5);
+    if(!p){pen=false;continue;}
+    if(pen)ctx.lineTo(p[0],p[1]);else{ctx.moveTo(p[0],p[1]);pen=true;}
+  }
+  ctx.stroke();
+  if(dash)ctx.setLineDash([]);
+}
+
+// ---- объекты ----
+function renderObjects(st){
+  const pulse=1+Math.sin(tGlobal*4)*.2;
+
+  // нить создателя — тонкая, поверх пола, с бегущим пунктиром
+  if(DEV&&thread.on&&thread.path&&state==='explore'){
+    ctx.save();ctx.lineDashOffset=-tGlobal*26;
+    floorPath(thread.path,'rgba(154,122,216,.85)',1.6,[7,9],2.5);
+    ctx.restore();
+    const tgt=threadTarget();
+    const p=pt3(cellCX(tgt[1]),cellCY(tgt[0]),24);
+    if(p){
+      ctx.fillStyle='rgba(154,122,216,.5)';
+      ctx.beginPath();ctx.arc(p[0],p[1],clamp(600/p[2],2,14),0,7);ctx.fill();
+    }
+  }
+  // линия к монстру — видно, где он, даже за стенами
+  if(DEV&&monLine.on&&monLine.path&&state==='explore'){
+    ctx.save();ctx.lineDashOffset=tGlobal*34;
+    floorPath(monLine.path,'rgba(226,90,70,.8)',1.6,[4,7],3.5);
+    ctx.restore();
+    const p=pt3(monster.x,monster.y,30);
+    if(p){
+      ctx.strokeStyle='rgba(226,90,70,.55)';ctx.lineWidth=1.3;
+      const R=clamp(MON_R*1.5/p[2]*FOCAL,4,700);
+      ctx.beginPath();ctx.arc(p[0],p[1],R,0,7);ctx.stroke();
+    }
+  }
+  // тропа от существа-проводника
+  if(guide.trail&&guide.trailT>0)floorPath(guide.trail,'rgba(79,216,255,.55)',2.4,[6,8],2);
+  // линия побега во время финального забега — её рисует палочка, это игровая механика
+  if(chase&&chase.path){
+    ctx.save();ctx.lineDashOffset=-tGlobal*70;
+    floorPath(chase.path,'rgba(57,255,158,.9)',3.4,[16,10],2);
+    ctx.restore();
+  }
+  // Безопасные комнаты — контур на полу. Это был ЕДИНСТВЕННЫЙ объект, который рисовался
+  // без проверки occlusion, и потому светился сквозь стены через полкарты.
+  // Стены не были полупрозрачными — просвечивал именно он.
+  for(const s of SAFE){
+    const x=cellCX(s[1]),y=cellCY(s[0]),h=CELL*.4;
+    const cs=[[x-h,y-h],[x+h,y-h],[x+h,y+h],[x-h,y+h],[x-h,y-h]];
+    ctx.strokeStyle='rgba(79,216,255,.45)';ctx.lineWidth=1.5;
+    ctx.beginPath();
+    for(let i=0;i+1<cs.length;i++){
+      const mx=(cs[i][0]+cs[i+1][0])/2, my=(cs[i][1]+cs[i+1][1])/2;
+      if(!visible(mx,my))continue;                 // сторона за камнем — не рисуем
+      const a=pt3(cs[i][0],cs[i][1],1), b=pt3(cs[i+1][0],cs[i+1][1],1);
+      if(a&&b){ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);}
+    }
+    ctx.stroke();
+  }
+  // полотна — светящиеся рамки на стенах
+  for(let i=0;i<N_CANV;i++){
+    const f=CANV_FACE[i];if(!f)continue;
+    const active=i===prog.done, done=i<prog.done;
+    if(!visible(f.x,f.y))continue;
+    const a=done?.22:active?.95:.16;
+    const col=done?'57,255,158':active?'57,255,158':'80,120,100';
+    const w=CELL*.34,zb=12,zt=44;
+    // рамка
+    ctx.strokeStyle='rgba('+col+','+(a*.6)+')';ctx.lineWidth=1.4;
+    ctx.beginPath();let pen=false;
+    for(const [s,z] of [[-w,zb],[w,zb],[w,zt],[-w,zt],[-w,zb]]){
+      const p=pt3(f.x+f.ux*s,f.y+f.uy*s,z);
+      if(!p){pen=false;continue;}
+      if(pen)ctx.lineTo(p[0],p[1]);else{ctx.moveTo(p[0],p[1]);pen=true;}
+    }
+    ctx.stroke();
+    // точки
+    ctx.fillStyle='rgba('+col+','+a+')';
+    const N=active?6:3;
+    for(let k=0;k<N;k++){
+      const ph=k*2.1+(active?tGlobal*1.4:0);
+      const p=pt3(f.x+f.ux*Math.cos(ph)*w*.6, f.y+f.uy*Math.cos(ph)*w*.6, (zb+zt)/2+Math.sin(ph)*13);
+      if(!p)continue;
+      ctx.beginPath();ctx.arc(p[0],p[1],clamp(320/p[2]*(active?pulse:1),1.2,7),0,7);ctx.fill();
+    }
+  }
+  // существо-проводник
+  if(!guide.used&&GUIDE_FACE&&visible(GUIDE_FACE.x,GUIDE_FACE.y)){
+    const f=GUIDE_FACE;
+    ctx.fillStyle='rgba(79,216,255,.8)';
+    for(let k=0;k<5;k++){
+      const ph=k*1.257+tGlobal*1.5;
+      const p=pt3(f.x+f.ux*Math.cos(ph)*13, f.y+f.uy*Math.cos(ph)*13, 30+Math.sin(ph)*12);
+      if(!p)continue;
+      ctx.beginPath();ctx.arc(p[0],p[1],clamp(280/p[2],1.2,6),0,7);ctx.fill();
+    }
+  }
+  // выход
+  {
+    const x=cellCX(EXIT[1]),y=cellCY(EXIT[0]);
+    if(visible(x,y)){
+      const p=pt3(x,y,28);
+      if(p){
+        const R=clamp(CELL*.5/p[2]*FOCAL,3,900);
+        ctx.strokeStyle=prog.done>=N_CANV?'rgba(57,255,158,'+(.6+Math.sin(tGlobal*5)*.3)+')':'rgba(150,150,160,.2)';
+        ctx.lineWidth=2.2;ctx.beginPath();ctx.arc(p[0],p[1],R,0,7);ctx.stroke();
+      }
+    }
+  }
+  renderDecor();
+  renderTables();
+  // В фазах 1–2 монстра не видно вообще — он внутри стены, только слышен.
+  // Проверять один центр — значит показывать монстра только на прямой в упор:
+  // в коридоре шириной в клетку он не виден вообще, а потом выпрыгивает целиком.
+  // Теперь каждая точка тела проверяется отдельно — из-за угла торчит его часть.
+  if(phase>=3&&monster.mode!=='gone'&&dist2(cam.x,cam.y,monster.x,monster.y)<(CELL*11)**2)renderMonster();
+  if(wall)renderWallTentacles();
+  // стадия 3: рассыпь стен
+  if(dotSpray.length){
+    for(const [x,y,r,l] of dotSpray){
+      ctx.fillStyle='rgba(150,148,140,'+(l*.5).toFixed(3)+')';
+      ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();
+    }
+  }
+}
+
+// ---- столы с книжками (и палочка на стартовом) ----
+const TBL_H=26, TBL_W=17, TBL_D=11;      // высота, полширины, полглубины столешницы
+function renderTables(){
+  for(const t of TABLES){
+    if(dist2(cam.x,cam.y,t.x,t.y)>(CELL*7)**2)continue;
+    // Пока палочки нет, стартовый стол светится сам — иначе его не найти в темноте.
+    const own=t.wand&&!hasWand;
+    const l=own?.85:lightAt(t.x,t.y);
+    if((!own&&l<=.03)||!visible(t.x,t.y))continue;
+    // точка столешницы: a — вдоль стола, b — в глубину, z — высота
+    const P=(a,b,z)=>pt3(t.x+t.ux*a+t.dx*b, t.y+t.uy*a+t.dy*b, z);
+    const ink='rgba(206,202,190,'+(l*.8).toFixed(3)+')';
+    // столешница
+    ctx.strokeStyle=ink;ctx.lineWidth=1.4;
+    ctx.beginPath();let pen=false;
+    for(const [a,b] of [[-TBL_W,-TBL_D],[TBL_W,-TBL_D],[TBL_W,TBL_D],[-TBL_W,TBL_D],[-TBL_W,-TBL_D]]){
+      const p=P(a,b,TBL_H);
+      if(!p){pen=false;continue;}
+      if(pen)ctx.lineTo(p[0],p[1]);else{ctx.moveTo(p[0],p[1]);pen=true;}
+    }
+    ctx.stroke();
+    // ножки
+    ctx.beginPath();
+    for(const [a,b] of [[-TBL_W,-TBL_D],[TBL_W,-TBL_D],[TBL_W,TBL_D],[-TBL_W,TBL_D]]){
+      const top=P(a,b,TBL_H), bot=P(a,b,0);
+      if(top&&bot){ctx.moveTo(top[0],top[1]);ctx.lineTo(bot[0],bot[1]);}
+    }
+    ctx.stroke();
+    // книжечка — тёплая, чуть светится, чтобы её было видно и захотелось нажать
+    const near=dist2(player.x,player.y,t.x,t.y)<NOTE_REACH*NOTE_REACH;
+    const glow=t.read?.5:(near?1:.75)+Math.sin(tGlobal*2.2)*.12;
+    const bw=7,bd=5, bx=t.wand?-6:0;
+    ctx.strokeStyle='rgba(238,228,196,'+(l*glow).toFixed(3)+')';ctx.lineWidth=1.6;
+    ctx.beginPath();pen=false;
+    for(const [a,b] of [[bx-bw,-bd],[bx+bw,-bd],[bx+bw,bd],[bx-bw,bd],[bx-bw,-bd]]){
+      const p=P(a,b,TBL_H+2);
+      if(!p){pen=false;continue;}
+      if(pen)ctx.lineTo(p[0],p[1]);else{ctx.moveTo(p[0],p[1]);pen=true;}
+    }
+    ctx.stroke();
+    const sp=P(bx,0,TBL_H+3);            // корешок
+    if(sp){
+      const e=P(bx,0,TBL_H+2);
+      ctx.fillStyle='rgba(246,238,214,'+(l*glow).toFixed(3)+')';
+      ctx.beginPath();ctx.arc(sp[0],sp[1],clamp(150/sp[2],.8,3.4),0,7);ctx.fill();
+    }
+    // палочка рядом с книжкой — только на стартовом столе
+    if(t.wand){
+      const A=P(6,-4,TBL_H+2), B=P(15,4,TBL_H+2);
+      if(A&&B){
+        ctx.strokeStyle='rgba(214,210,196,'+(l*.9).toFixed(3)+')';ctx.lineWidth=2.2;
+        ctx.beginPath();ctx.moveTo(A[0],A[1]);ctx.lineTo(B[0],B[1]);ctx.stroke();
+        ctx.fillStyle='rgba(255,240,180,'+(l*(.7+Math.sin(tGlobal*3)*.25)).toFixed(3)+')';
+        ctx.beginPath();ctx.arc(B[0],B[1],clamp(170/B[2],1,4.5),0,7);ctx.fill();
+      }
+    }
+  }
+}
+// ближайшая книжка, которую сейчас можно прочесть
+function bookAtHand(){
+  if(state!=='explore')return null;
+  let best=null,bd=NOTE_REACH*NOTE_REACH;
+  for(const t of TABLES){
+    const d=dist2(player.x,player.y,t.x,t.y);
+    // Луч от ИГРОКА, а не от камеры: cam обновляется только внутри render(),
+    // и до первого кадра он в нуле — книжка «не видна», хотя стоит вплотную.
+    if(d<bd&&losClear(player.x,player.y,t.x,t.y)){bd=d;best=t;}
+  }
+  return best;
+}
+// Взятие палочки — первое действие в игре. Пока её нет, E на стартовом столе
+// берёт именно её, а не читает книжку: свет важнее.
+function wandAtHand(){
+  if(hasWand||state!=='explore')return null;
+  const t=TABLES.find(x=>x.wand);
+  if(!t)return null;
+  return dist2(player.x,player.y,t.x,t.y)<NOTE_REACH*NOTE_REACH&&
+         losClear(player.x,player.y,t.x,t.y)?t:null;
+}
+function takeWand(t){
+  if(!t)return;
+  hasWand=true;t.wand=false;
+  sfx.flash();sfx.door();
+  say('Палочка в руке. Она даёт свет — и она же рисует.',5);
+}
+function openNote(t){
+  if(!t)return;
+  t.read=true;
+  note={text:t.text,t:0};
+  state='note';
+  releaseMouse();
+  sfx.door();
+}
+function closeNote(){
+  note=null;state='explore';grabMouse();
+}
+
+// ---- украшения на стенах: созвездия, каракули жертв и спрятанные гнёзда ----
+function renderDecor(){
+  const R=CELL*6, R2=R*R;
+  for(const d of DECOR){
+    if(dist2(cam.x,cam.y,d.x,d.y)>R2)continue;
+    const l=lightAt(d.x,d.y);
+    if(l<=.03||!visible(d.x,d.y))continue;
+    const P=(a,z)=>pt3(d.x+d.ux*a,d.y+d.uy*a,z);
+    if(d.kind==='nest'){
+      // Гнездо. Пульсирует еле-еле — заметно, только если специально присматриваться.
+      // Сработавшее гнездо остаётся пустой дырой в стене: игрок учится их узнавать.
+      const pulse=d.used?0:Math.sin(tGlobal*1.7+d.seed)*.5+.5;
+      // Цвет специально ЗАМЕТНЫЙ, но чужой: тёмно-багровая масса среди бледных рисунков.
+      // Первый вариант был почти равен фону и не читался вообще — это не «присматриваться»,
+      // а «невозможно увидеть».
+      const pts=[];
+      ctx.fillStyle=d.used?'rgba(10,8,10,'+(l*.9).toFixed(3)+')'
+                          :'rgba(66,26,30,'+(l*(.75+pulse*.25)).toFixed(3)+')';
+      for(let k=0;k<14;k++){
+        const a=k*2.399+d.seed;
+        const p=P(Math.cos(a)*(9+pulse*1.8), 30+Math.sin(a)*(8+pulse*1.8));
+        if(!p)continue;
+        pts.push(p);
+        ctx.beginPath();ctx.arc(p[0],p[1],clamp(200/p[2],1.2,7),0,7);ctx.fill();
+      }
+      if(!d.used){
+        // нити между точками — тот же материал, что у монстра
+        ctx.strokeStyle='rgba(96,34,38,'+(l*.4).toFixed(3)+')';ctx.lineWidth=.9;
+        ctx.beginPath();
+        for(let k=0;k+2<pts.length;k+=2){ctx.moveTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[k+2][0],pts[k+2][1]);}
+        ctx.stroke();
+        if(pulse>.6){   // на пике пульсации проступает красная искра
+          ctx.fillStyle='rgba(210,50,45,'+(l*(pulse-.6)*2).toFixed(3)+')';
+          const p=P(0,31);
+          if(p){ctx.beginPath();ctx.arc(p[0],p[1],clamp(150/p[2],1,4),0,7);ctx.fill();}
+        }
+      }
+      continue;
+    }
+    const col='rgba(150,175,200,'+(l*.7).toFixed(3)+')';
+    if(d.kind==='star'){                       // созвездие: точки и тонкие связи
+      const pts=[];
+      for(let k=0;k<d.n;k++){
+        const a=k*2.1+d.seed, rad=4+((k*13+d.seed)%7);
+        const p=P(Math.cos(a)*rad, 30+Math.sin(a*1.3)*rad*.9);
+        if(p)pts.push(p);
+      }
+      ctx.strokeStyle='rgba(120,150,180,'+(l*.3).toFixed(3)+')';ctx.lineWidth=.8;
+      ctx.beginPath();
+      for(let k=0;k+1<pts.length;k++){ctx.moveTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[k+1][0],pts[k+1][1]);}
+      ctx.stroke();
+      ctx.fillStyle=col;
+      for(const p of pts){ctx.beginPath();ctx.arc(p[0],p[1],clamp(150/p[2],.8,4),0,7);ctx.fill();}
+    } else if(d.kind==='scrawl'){              // чужой недорисованный силуэт — лор без текста
+      ctx.strokeStyle='rgba(170,160,140,'+(l*.55).toFixed(3)+')';ctx.lineWidth=1.4;
+      ctx.beginPath();let pen=false;
+      for(let k=0;k<=d.n+2;k++){
+        const t=k/(d.n+2);
+        const p=P((t-.5)*20+Math.sin(t*7+d.seed)*4, 20+t*20+Math.cos(t*5+d.seed)*4);
+        if(!p){pen=false;continue;}
+        if(pen)ctx.lineTo(p[0],p[1]);else{ctx.moveTo(p[0],p[1]);pen=true;}
+      }
+      ctx.stroke();
+      const e=P(11,22);                        // линия обрывается точкой — не дорисовал
+      if(e){ctx.fillStyle=col;ctx.beginPath();ctx.arc(e[0],e[1],clamp(150/e[2],1,4),0,7);ctx.fill();}
+    } else if(d.kind==='spiral'){
+      ctx.strokeStyle='rgba(150,170,190,'+(l*.45).toFixed(3)+')';ctx.lineWidth=1;
+      ctx.beginPath();let pen=false;
+      for(let k=0;k<=26;k++){
+        const t=k/26, a=t*9+d.seed, rad=t*11;
+        const p=P(Math.cos(a)*rad, 30+Math.sin(a)*rad);
+        if(!p){pen=false;continue;}
+        if(pen)ctx.lineTo(p[0],p[1]);else{ctx.moveTo(p[0],p[1]);pen=true;}
+      }
+      ctx.stroke();
+    } else {                                   // палочки-засечки: кто-то считал дни
+      ctx.strokeStyle='rgba(180,170,150,'+(l*.5).toFixed(3)+')';ctx.lineWidth=1.3;
+      ctx.beginPath();
+      for(let k=0;k<d.n+2;k++){
+        const off=(k-(d.n+2)/2)*4;
+        const a=P(off,23),b2=P(off+1.5,37);
+        if(a&&b2){ctx.moveTo(a[0],a[1]);ctx.lineTo(b2[0],b2[1]);}
+      }
+      ctx.stroke();
+    }
+  }
+}
+
+// ---- активный монстр: зелёный объёмный рой с красными глазами ----
+const MON_R=26;      // радиус тела
+const MON_N=64;      // точек в рое
+// Тело сороконожки: сегменты тянутся по следу головы, у каждого пара лап.
+// Стены телу не мешают — оно из того же материала, поэтому сегменты спокойно уходят в стену.
+function renderCentipede(){
+  const T=monster.trail;
+  if(T.length<3)return;
+  // Сегменты ставим по РАВНОЙ ДЛИНЕ вдоль следа, а не по индексу: иначе, когда монстр
+  // почти стоит, весь хвост слипается в один ком и тела не видно.
+  const STEP=17, SEG=13;
+  const pts=[];
+  let acc=0;
+  for(let i=1;i<T.length&&pts.length<SEG;i++){
+    acc+=Math.hypot(T[i][0]-T[i-1][0],T[i][1]-T[i-1][1]);
+    if(acc>=STEP){acc=0;pts.push([T[i][0],T[i][1],T[i-1][0]-T[i][0],T[i-1][1]-T[i][1]]);}
+  }
+  for(let i=pts.length-1;i>=0;i--){
+    const [sx,sy,fx,fy]=pts[i];
+    const t=(i+1)/SEG;                                   // 0 у головы, 1 у хвоста
+    const rad=MON_R*(.62-t*.34);
+    const z=28+Math.sin(tGlobal*7-i*.8)*6*(1-t*.4);      // волна по телу
+    const p=pt3(sx,sy,z);
+    if(!p)continue;
+    const inStone=isWall(...toCell(sx,sy));
+    if(!inStone&&!visible(sx,sy))continue;               // сегмент за углом не рисуем
+    const a=(1-t*.5)*(inStone?.4:1);                     // в стене тускнеет, но не исчезает
+    // лапы: поперёк направления движения сегмента, а не поперёк камеры
+    const fl=Math.hypot(fx,fy)||1, px=-fy/fl, py=fx/fl;
+    ctx.strokeStyle='rgba(206,202,190,'+(a*.42).toFixed(3)+')';ctx.lineWidth=1.1;
+    ctx.beginPath();
+    for(const s of [-1,1]){
+      const sw=1.25+Math.sin(tGlobal*10-i*1.1)*.45;
+      const lp=pt3(sx,sy,z-rad*.4);
+      const tp=pt3(sx+px*s*rad*sw*2.1, sy+py*s*rad*sw*2.1, 3);
+      if(lp&&tp){ctx.moveTo(lp[0],lp[1]);ctx.lineTo(tp[0],tp[1]);}
+    }
+    ctx.stroke();
+    // сегмент — плотное ядро без большого ореола, иначе хвост засвечивает пол-экрана
+    const R=clamp(rad/p[2]*FOCAL,1.2,150);
+    const g=ctx.createRadialGradient(p[0],p[1],0,p[0],p[1],R);
+    g.addColorStop(0,'rgba(78,224,132,'+(a*.7).toFixed(3)+')');
+    g.addColorStop(.55,'rgba(34,132,74,'+(a*.4).toFixed(3)+')');
+    g.addColorStop(1,'rgba(20,70,42,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(p[0],p[1],R,0,7);ctx.fill();
+    ctx.strokeStyle='rgba(206,202,190,'+(a*.32).toFixed(3)+')';ctx.lineWidth=1;   // оболочка — камень
+    ctx.beginPath();ctx.arc(p[0],p[1],R*.5,0,7);ctx.stroke();
+  }
+}
+function renderMonster(){
+  const cz=32;
+  const c=pt3(monster.x,monster.y,cz);
+  if(!c)return;
+  if(phase>=3)renderCentipede();   // после пробуждения у него появляется тело
+  // мягкое зелёное свечение — монстр виден в темноте и не сливается со стенами
+  const centerSeen=visible(monster.x,monster.y);
+
+  // точки по сфере (золотой угол) — читается как объём, а не как плоское кольцо
+  const pts=[];
+  for(let k=0;k<MON_N;k++){
+    const t=(k+.5)/MON_N;
+    const zz=1-2*t, ring=Math.sqrt(Math.max(0,1-zz*zz));
+    const a=k*2.39996+tGlobal*.9;
+    const rr=MON_R*(.72+.28*Math.sin(k*1.7+tGlobal*2.2));   // пульсация
+    const wx=monster.x+Math.cos(a)*ring*rr, wy=monster.y+Math.sin(a)*ring*rr;
+    const p=pt3(wx,wy,cz+zz*rr*1.15);
+    if(!p||!visible(wx,wy))continue;     // эта точка тела за камнем — её не видно
+    const rel=clamp((c[2]-p[2])/MON_R,-1,1);                // >0 — точка ближе к камере
+    const lit=.42+.58*(rel*.5+.5);
+    pts.push(p);
+    ctx.fillStyle='rgba('+Math.round(34+lit*54)+','+Math.round(120+lit*135)+','+Math.round(60+lit*70)+','+(.55+lit*.42).toFixed(2)+')';
+    ctx.beginPath();ctx.arc(p[0],p[1],clamp(200/p[2]*(.75+rel*.35),1,9),0,7);ctx.fill();
+  }
+  // нити только между близкими точками — иначе через всё тело идут длинные хорды
+  const thr=clamp(MON_R*.85/c[2]*FOCAL,5,220), thr2=thr*thr;
+  // Нити — цветом СТЕН: конструкция у монстра и у камня одна и та же чернильная сетка,
+  // зелёным светится только то, что внутри неё живое.
+  // Мягкое свечение — соразмерно доле видимого тела: из-за угла это отблеск, а не шар.
+  if(pts.length){
+    const frac=clamp(pts.length/MON_N,0,1);
+    const gr=clamp(MON_R*2.4/c[2]*FOCAL,10,900);
+    const g=ctx.createRadialGradient(c[0],c[1],0,c[0],c[1],gr);
+    g.addColorStop(0,'rgba(40,190,110,'+(.20*frac).toFixed(3)+')');
+    g.addColorStop(1,'rgba(40,190,110,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(c[0],c[1],gr,0,7);ctx.fill();
+  }
+  ctx.strokeStyle='rgba(206,202,190,.30)';ctx.lineWidth=.9;
+  ctx.beginPath();
+  for(let k=0;k<pts.length;k++)for(let j=k+1;j<Math.min(k+4,pts.length);j++){
+    if(dist2(pts[k][0],pts[k][1],pts[j][0],pts[j][1])<thr2){
+      ctx.moveTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[j][0],pts[j][1]);
+    }
+  }
+  ctx.stroke();
+
+  // глаза — на стороне, обращённой к игроку
+  const dx=player.x-monster.x, dy=player.y-monster.y, l=Math.hypot(dx,dy)||1;
+  const fx=dx/l, fy=dy/l, rx=-fy, ry=fx;
+  for(const s of centerSeen?[-9,9]:[]){
+    const p=pt3(monster.x+fx*MON_R*.65+rx*s, monster.y+fy*MON_R*.65+ry*s, cz+9);
+    if(!p)continue;
+    const er=clamp(260/p[2],1.6,8);
+    const eg=ctx.createRadialGradient(p[0],p[1],0,p[0],p[1],er*3.2);
+    eg.addColorStop(0,'rgba(226,38,38,.55)');eg.addColorStop(1,'rgba(226,38,38,0)');
+    ctx.fillStyle=eg;ctx.beginPath();ctx.arc(p[0],p[1],er*3.2,0,7);ctx.fill();
+    ctx.fillStyle='rgba(255,70,60,.98)';
+    ctx.beginPath();ctx.arc(p[0],p[1],er,0,7);ctx.fill();
+  }
+}
+
+// ---- щупальца из стены (скриптовая встреча) ----
+function renderWallTentacles(){
+  const f=wall.face;
+  if(!visible(f.x,f.y))return;
+  const grow=wall.phase==='show'?clamp(wall.t/.5,0,1):1;
+  const rage=wall.phase==='strike'?1:0;
+  // пролом в стене
+  ctx.fillStyle='rgba(8,4,5,.95)';
+  for(let k=0;k<10;k++){
+    const a=k*2.4+tGlobal*.6;
+    const p=pt3(f.x+f.ux*Math.cos(a)*16, f.y+f.uy*Math.cos(a)*16, 30+Math.sin(a)*17);
+    if(p){ctx.beginPath();ctx.arc(p[0],p[1],clamp(200/p[2],1,7),0,7);ctx.fill();}
+  }
+  for(const arm of wall.arms){
+    const pts=[];
+    for(let k=0;k<=arm.seg;k++){
+      const t=k/arm.seg;
+      const out=t*arm.len*grow;
+      const sway=Math.sin(arm.ph+t*3.1+tGlobal*arm.sw*(3+rage*5))*t*(15+rage*13);
+      const rise=Math.sin(arm.ph*1.7+t*2.4+tGlobal*arm.sw*(2.4+rage*4))*t*(14+rage*12);
+      const p=pt3(f.x-f.dc*out+f.ux*(arm.s+sway), f.y-f.dr*out+f.uy*(arm.s+sway), arm.z+rise);
+      if(!p){pts.length=0;continue;}
+      pts.push([p[0],p[1],t]);
+    }
+    if(pts.length<2)continue;
+    for(let k=0;k+1<pts.length;k++){
+      ctx.strokeStyle='rgba(226,70,60,'+(.85-pts[k][2]*.45).toFixed(2)+')';
+      ctx.lineWidth=Math.max(.7,(1-pts[k][2])*4.5);
+      ctx.beginPath();ctx.moveTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[k+1][0],pts[k+1][1]);ctx.stroke();
+    }
+  }
+}
+
+// ============ render ============
+function render(){
+  const st=mStage();
+  ctx.fillStyle='#040407';ctx.fillRect(0,0,VW,VH);
+
+  // камера
+  cam.x=player.x;cam.y=player.y;cam.ang=player.ang;
+  cam.eye=EYE+Math.sin(player.bob)*1.3;
+  CA=Math.cos(cam.ang);SA=Math.sin(cam.ang);
+  pitchOff=Math.tan(player.pitch)*FOCAL;
+
+  const shx=st>=1?jit(st*1.8):0, shy=st>=1?jit(st*1.8):0;
+  ctx.save();ctx.translate(shx,shy);
+
+  initBuckets();dotSpray=[];
+  renderWalls(st);
+  flushSegs();
+  renderObjects(st);
+
+  ctx.restore();
+
+  // катсцена: чёрные полосы сверху и снизу, чтобы игрок сразу понял, что управление отняли
+  if(cut){
+    const h=VH*.13*clamp(cut.t/.18,0,1);
+    ctx.fillStyle='#000';ctx.fillRect(0,0,VW,h);ctx.fillRect(0,VH-h,VW,h);
+  }
+  // виньетка — край экрана глуше
+  const vg=ctx.createRadialGradient(VW/2,VH/2,Math.min(VW,VH)*.32,VW/2,VH/2,Math.max(VW,VH)*.72);
+  vg.addColorStop(0,'rgba(4,4,7,0)');vg.addColorStop(1,'rgba(4,4,7,.85)');
+  ctx.fillStyle=vg;ctx.fillRect(0,0,VW,VH);
+
+  // stage>=2 глаза по краям экрана
+  if(st>=2&&state==='explore'){
+    if(eyes.length<4&&rnd()<.01)eyes.push({x:rnd()<.5?20+rnd()*60:VW-20-rnd()*60,y:60+rnd()*(VH-120),life:3+rnd()*3});
+    ctx.fillStyle='rgba(200,40,40,.75)';
+    eyes.forEach(e=>{e.life-=1/60;
+      ctx.beginPath();ctx.arc(e.x,e.y,2.2,0,7);ctx.fill();
+      ctx.beginPath();ctx.arc(e.x+8,e.y+1,2.2,0,7);ctx.fill();});
+    eyes=eyes.filter(e=>e.life>0);
+  }
+  if(st>=1&&rnd()<.03){ctx.fillStyle='rgba(57,255,158,.03)';ctx.fillRect(0,0,VW,VH);}
+
+  if(state==='note')renderNote();
+  if(state==='draw'||state==='lightout')renderDraw();
+  if(state==='mash')renderMash();
+  if(state==='caught')renderScare();
+  renderHUD();
+}
+
+function renderDraw(){
+  ctx.fillStyle='rgba(3,3,6,.9)';ctx.fillRect(0,0,VW,VH);
+  const b=boardRect();
+  ctx.strokeStyle='rgba(200,196,184,.4)';ctx.lineWidth=1;
+  ctx.strokeRect(b.x,b.y,b.w,b.h);
+  const fear=clamp(( draw.isGuide?0
+    : draw.final?(draw.near*.9+mStage()*.1)
+    : (1-draw.timeLeft/draw.timeMax)*.8+mStage()*.15 ),0,1)*draw.tremor;
+  const amp=fear*5;
+  // 0 — рисунок целый, 1 — осыпался полностью
+  const dis=draw.dissolve>0?clamp(1-draw.dissolve/DISSOLVE_T,0,1):0;
+  const fade=1-dis;
+  const drift=d=>dis?[(d.vx||0)*dis,(d.vy||0)*dis*dis]:[0,0];
+  ctx.globalAlpha=fade;
+  const done=draw.dots.filter(d=>d.idx>=0&&d.done).sort((a,c)=>a.idx-c.idx);
+  if(done.length){
+    ctx.strokeStyle='rgba(57,255,158,.85)';ctx.lineWidth=2;
+    ctx.beginPath();
+    done.forEach((d,i)=>{
+      const [ox,oy]=drift(d), [bx,by]=dotXY(d,b);
+      const x=bx+jit(amp*.4)+ox, y=by+jit(amp*.4)+oy;
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    });
+    if(!dis){                        // хвост к курсору только пока рисуем
+      const [lx,ly]=dotXY(done[done.length-1],b);
+      const steps=6;
+      for(let i=1;i<=steps;i++){
+        ctx.lineTo(lx+(mouse.x-lx)*i/steps+jit(amp*2.6),ly+(mouse.y-ly)*i/steps+jit(amp*2.6));
+      }
+    }
+    ctx.stroke();
+  }
+  for(const d of draw.dots){
+    const [ox,oy]=drift(d), [bx,by]=dotXY(d,b);
+    const x=bx+jit(amp*.4)+ox, y=by+jit(amp*.4)+oy;
+    const col=PALETTE[d.col];
+    ctx.fillStyle=d.done?'#39FF9E':col;
+    ctx.globalAlpha=dotAlpha(d)*fade;
+    ctx.beginPath();ctx.arc(x,y,d.done?5:4,0,7);ctx.fill();
+    ctx.globalAlpha=fade;
+    // под тварью прячется и точка, и её номерок — иначе подсказка всё равно читается
+    // номерок — только если правило полотна его оставляет
+    if(d.idx>=0&&!d.done&&!tentBlocks(d.idx)&&!draw.mods.has('noNums')){
+      ctx.fillStyle='rgba(255,255,255,.3)';
+      ctx.font='9px "Courier New",monospace';
+      ctx.fillText(String(d.idx+1),x+6,y-6);
+    }
+  }
+  // Полотно в темноте: видно только пятно вокруг палочки. Рисуем маску ПОСЛЕ точек,
+  // но ДО щупалец и рамки порядка — иначе игрок не увидит, чем ему целиться.
+  if(draw.mods.has('lamp')&&!dis){
+    const R=118;
+    const g=ctx.createRadialGradient(mouse.x,mouse.y,R*.35,mouse.x,mouse.y,R);
+    g.addColorStop(0,'rgba(3,3,6,0)');g.addColorStop(1,'rgba(3,3,6,.97)');
+    ctx.fillStyle=g;ctx.fillRect(b.x-2,b.y-2,b.w+4,b.h+4);
+    ctx.fillStyle='rgba(3,3,6,.97)';
+    ctx.fillRect(b.x-2,b.y-2,b.w+4,Math.max(0,mouse.y-R-b.y));
+    ctx.fillRect(b.x-2,Math.min(b.y+b.h+2,mouse.y+R),b.w+4,Math.max(0,b.y+b.h+2-(mouse.y+R)));
+    ctx.fillRect(b.x-2,b.y-2,Math.max(0,mouse.x-R-b.x),b.h+4);
+    ctx.fillRect(Math.min(b.x+b.w+2,mouse.x+R),b.y-2,Math.max(0,b.x+b.w+2-(mouse.x+R)),b.h+4);
+  }
+  if(!dis)renderTentacle(b);
+  if(draw.final)renderLooming(b);
+  ctx.globalAlpha=1;
+  if(!draw.isGuide&&state!=='lightout'){
+    const n=draw.n,sw=22,total=n*(sw+8);
+    let x0=(VW-total)/2,y0=b.y+b.h+26;
+    ctx.font='11px "Courier New",monospace';
+    ctx.fillStyle='rgba(122,168,143,.8)';
+    ctx.fillText('ПОРЯДОК:',x0-84,y0+14);
+    for(let i=0;i<n;i++){
+      const real=draw.dots.find(d=>d.idx===i);
+      ctx.fillStyle=PALETTE[real.col];
+      ctx.globalAlpha=i<draw.next?.25:1;
+      ctx.fillRect(x0+i*(sw+8),y0,sw,sw);
+      ctx.globalAlpha=1;
+      if(i===draw.next){ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.strokeRect(x0+i*(sw+8)-2,y0-2,sw+4,sw+4);}
+    }
+    // Полоска. На обычном полотне — секунды. В финале секунд нет: полоска НАПОЛНЯЕТСЯ
+    // по мере того, как он подходит. Это тот же таймер, но у него есть шаги и голос.
+    const tw=b.w;
+    if(draw.final){
+      ctx.fillStyle='#14141c';ctx.fillRect(b.x,b.y-16,tw,6);
+      ctx.fillStyle='#e0503c';ctx.fillRect(b.x,b.y-16,tw*clamp(draw.near,0,1),6);
+      ctx.fillStyle='#e0503c';ctx.font='12px "Courier New",monospace';
+      ctx.fillText('ОНО ИДЁТ',b.x,b.y-24);
+    } else {
+    const frac=clamp(draw.timeLeft/draw.timeMax,0,1);
+    ctx.fillStyle='#14141c';ctx.fillRect(b.x,b.y-16,tw,6);
+    ctx.fillStyle=frac>.35?'#39FF9E':'#e0503c';ctx.fillRect(b.x,b.y-16,tw*frac,6);
+    }
+    const frac=clamp(draw.timeLeft/draw.timeMax,0,1);
+    if(draw.tremor>1){
+      ctx.fillStyle='#e0503c';ctx.font='12px "Courier New",monospace';
+      ctx.fillText('СТРАХ ×'+draw.tremor.toFixed(1),b.x,b.y-24);
+    }
+    if(draw.mods.size){
+      ctx.fillStyle='#b8a24a';ctx.font='12px "Courier New",monospace';
+      ctx.textAlign='right';
+      ctx.fillText([...draw.mods].map(m=>MOD_NAME[m]).join(' · '),b.x+tw,b.y-40);
+      ctx.textAlign='left';
+    }
+    // «кусок», отгрызенный последней точкой
+    if(draw.penT>0){
+      const p=draw.penT/.7,bite=tw*(DOT_TIME_COST/draw.timeMax);
+      ctx.fillStyle='rgba(224,80,60,'+p+')';
+      ctx.fillRect(b.x+tw*frac,b.y-16,bite,6);
+      ctx.font='12px "Courier New",monospace';ctx.textAlign='right';
+      ctx.fillText('−'+DOT_TIME_COST+' с',b.x+tw,b.y-24-(1-p)*8);
+      ctx.textAlign='left';
+    }
+  } else {
+    ctx.fillStyle='rgba(79,216,255,.8)';ctx.font='13px "Courier New",monospace';
+    ctx.textAlign='center';
+    ctx.fillText('Существо просит закончить его рисунок. Ошибки здесь не считаются.',VW/2,b.y+b.h+30);
+    ctx.textAlign='left';
+  }
+  // ЗАСВЕТ. Вся игра прошла в полной темноте — и последнее, что видит игрок,
+  // это первый настоящий свет. Он бьёт из двери, которую тот сам только что дорисовал.
+  if(state==='lightout'){
+    const u=clamp(lightT/3.1,0,1);
+    const cx=b.x+b.w*.5, cy=b.y+b.h*.5;
+    const R=Math.max(VW,VH)*(.05+u*u*1.5);
+    const g=ctx.createRadialGradient(cx,cy,0,cx,cy,R);
+    const a=clamp(u*1.4,0,1);
+    g.addColorStop(0,'rgba(255,246,222,'+a.toFixed(3)+')');
+    g.addColorStop(.55,'rgba(255,232,180,'+(a*.55).toFixed(3)+')');
+    g.addColorStop(1,'rgba(255,220,150,0)');
+    ctx.fillStyle=g;ctx.fillRect(0,0,VW,VH);
+    if(u>.72){ctx.fillStyle='rgba(255,250,238,'+clamp((u-.72)/.28,0,1)+')';ctx.fillRect(0,0,VW,VH);}
+    if(u<.5){
+      ctx.fillStyle='rgba(40,26,10,'+(1-u*2)*.75+')';
+      ctx.font='14px "Courier New",monospace';ctx.textAlign='center';
+      ctx.fillText('Дверь была там всё это время. Её просто никто не нарисовал.',VW/2,b.y+b.h+34);
+      ctx.textAlign='left';
+    }
+    return;
+  }
+  // виртуальный курсор — только если мышь всё-таки захвачена, иначе виден системный
+  if(locked){
+    ctx.strokeStyle='rgba(184,255,217,.9)';ctx.lineWidth=1.2;
+    ctx.beginPath();
+    ctx.moveTo(mouse.x-7,mouse.y);ctx.lineTo(mouse.x+7,mouse.y);
+    ctx.moveTo(mouse.x,mouse.y-7);ctx.lineTo(mouse.x,mouse.y+7);
+    ctx.stroke();
+  }
+}
+// чёрные щупальца: выхлёстывают из-за края картины и накрывают нужную точку.
+// Тело чёрное, но с тонкой красной каймой — на чёрном полотне иначе просто не видно.
+// Он поднимается ЗА полотном. Игрок его не видит целиком — только то, что уже
+// выросло над верхним краем доски. Смотреть некогда: надо дорисовывать.
+function renderLooming(b){
+  const k=clamp((draw.near-.35)/.65,0,1);
+  if(k<=0)return;
+  const h=k*k*(b.y+40), cx=VW/2+Math.sin(tGlobal*.7)*18*k;
+  const top=b.y-h;
+  ctx.save();
+  const g=ctx.createRadialGradient(cx,top+h*.4,0,cx,top+h*.4,h*1.5+40);
+  g.addColorStop(0,'rgba(46,168,102,'+(.16+.2*k).toFixed(3)+')');
+  g.addColorStop(1,'rgba(46,168,102,0)');
+  ctx.fillStyle=g;ctx.fillRect(0,0,VW,b.y+30);
+  // силуэт: та же каменная оболочка, что у стен
+  ctx.strokeStyle='rgba(206,202,190,'+(.25+.45*k).toFixed(3)+')';
+  ctx.lineWidth=1.4;
+  const w=90+220*k;
+  for(let i=0;i<9;i++){
+    const t=i/8, x=cx+(t-.5)*w;
+    ctx.beginPath();
+    ctx.moveTo(x+Math.sin(tGlobal*2.1+i)*6*k, b.y+10);
+    ctx.lineTo(x+Math.sin(tGlobal*1.6+i*.7)*14*k, top+h*(.25+.5*Math.abs(t-.5)));
+    ctx.stroke();
+  }
+  if(k>.45){                       // глаза загораются, когда он уже почти здесь
+    const a=(k-.45)/.55;
+    ctx.fillStyle='rgba(226,60,50,'+(a*.95).toFixed(3)+')';
+    for(const sgn of [-1,1]){
+      ctx.beginPath();
+      ctx.ellipse(cx+sgn*(16+22*k),top+h*.32,4+7*k,2.5+4*k,0,0,7);ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+function renderTentacle(b){
+  const c=draw.tent;if(!c)return;
+  const target=draw.dots.find(d=>d.idx===c.dot);if(!target)return;
+  const [tx,ty]=dotXY(target,b);
+  const e=tentCover();
+  if(e<=0)return;
+  // точка входа на краю картины
+  let ax,ay;
+  if(c.edge===0){ax=b.x+b.w*c.along;ay=b.y-10;}
+  else if(c.edge===1){ax=b.x+b.w+10;ay=b.y+b.h*c.along;}
+  else if(c.edge===2){ax=b.x+b.w*c.along;ay=b.y+b.h+10;}
+  else {ax=b.x-10;ay=b.y+b.h*c.along;}
+  const L=Math.hypot(tx-ax,ty-ay)||1;
+  const ux=(tx-ax)/L, uy=(ty-ay)/L;          // направление выхлёста
+  const px=-uy, py=ux;                       // перпендикуляр — по нему изгиб
+  for(const arm of c.arms){
+    const pts=[];
+    for(let k=0;k<=14;k++){
+      const t=k/14;
+      if(t>e)break;
+      const bow=Math.sin(t*Math.PI)*arm.bow*78                       // общая дуга
+              + Math.sin(t*5.5+tGlobal*9*arm.sw+arm.ph)*t*11         // мелкая живая волна
+              + arm.off*(1-t);                                       // расхождение у края
+      pts.push([ax+ux*L*t+px*bow, ay+uy*L*t+py*bow, t]);
+    }
+    if(pts.length<2)continue;
+    for(let k=0;k+1<pts.length;k++){
+      const w=Math.max(1.2,(1-pts[k][2])*9);
+      ctx.strokeStyle='rgba(150,26,26,.55)';ctx.lineWidth=w+2.4;   // кайма
+      ctx.beginPath();ctx.moveTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[k+1][0],pts[k+1][1]);ctx.stroke();
+      ctx.strokeStyle='rgba(2,2,4,.99)';ctx.lineWidth=w;           // чёрное тело
+      ctx.beginPath();ctx.moveTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[k+1][0],pts[k+1][1]);ctx.stroke();
+    }
+  }
+  // кончик накрывает точку целиком
+  const R=17*e;
+  ctx.fillStyle='rgba(150,26,26,.5)';
+  ctx.beginPath();ctx.arc(tx,ty,R+2.5,0,7);ctx.fill();
+  ctx.fillStyle='rgba(2,2,4,.99)';
+  ctx.beginPath();ctx.arc(tx,ty,R,0,7);ctx.fill();
+}
+// Записка: белый лист во весь экран. Единственное белое пятно в игре —
+// после часа чернильной темноты оно бьёт по глазам, и это нарочно.
+function renderNote(){
+  note.t+=1/60;
+  const p=clamp(note.t/.22,0,1), e=p*p*(3-2*p);      // лист разворачивается
+  ctx.fillStyle='rgba(2,2,4,'+(e*.82).toFixed(3)+')';
+  ctx.fillRect(0,0,VW,VH);
+  const w=Math.min(VW*.5,520)*e, h=Math.min(VH*.62,660)*e;
+  const x=(VW-w)/2, y=(VH-h)/2;
+  ctx.save();
+  ctx.translate(x+w/2,y+h/2);
+  ctx.rotate(-0.012);                                 // лист лежит чуть криво
+  ctx.fillStyle='rgba(236,232,220,'+e.toFixed(3)+')';
+  ctx.fillRect(-w/2,-h/2,w,h);
+  ctx.strokeStyle='rgba(120,116,104,'+(e*.5).toFixed(3)+')';ctx.lineWidth=1;
+  ctx.strokeRect(-w/2,-h/2,w,h);
+  if(p>=1){
+    ctx.fillStyle='#1b1a18';
+    ctx.textAlign='center';
+    const size=Math.max(15,Math.min(24,w/17));
+    ctx.font=size+'px "Courier New",monospace';
+    // перенос по словам
+    const words=note.text.split(' '), lines=[]; let cur='';
+    for(const wd of words){
+      const test=cur?cur+' '+wd:wd;
+      if(ctx.measureText(test).width>w*.78&&cur){lines.push(cur);cur=wd;}else cur=test;
+    }
+    if(cur)lines.push(cur);
+    const lh=size*1.6, y0=-(lines.length-1)*lh/2;
+    lines.forEach((ln,i)=>ctx.fillText(ln,0,y0+i*lh+size*.35));
+    ctx.fillStyle='rgba(90,86,78,.75)';
+    ctx.font='12px "Courier New",monospace';
+    ctx.fillText('E или щелчок — убрать',0,h/2-26);
+    ctx.textAlign='left';
+  }
+  ctx.restore();
+}
+// Точка на периметре экрана по доле обхода 0..1 — оттуда щупальце и лезет.
+function edgePoint(u){
+  const P=2*(VW+VH); let d=(((u%1)+1)%1)*P;
+  if(d<VW)return{x:d,y:0};
+  d-=VW; if(d<VH)return{x:VW,y:d};
+  d-=VH; if(d<VW)return{x:VW-d,y:VH};
+  d-=VW; return{x:0,y:VH-d};
+}
+function makeFaceArms(n){
+  const arms=[];
+  for(let i=0;i<n;i++){
+    // корни разбросаны по периметру, но не строго равномерно — иначе читается как узор
+    const p=edgePoint((i+.5)/n+(rnd()-.5)*.09);
+    arms.push({x:p.x,y:p.y,seed:rnd()*99,w:8+rnd()*7,seg:10,
+               curl:rnd()<.5?-1:1, lead:.78+rnd()*.44});
+  }
+  return arms;
+}
+// Щупальца тянутся к лицу с краёв экрана и обхватывают его. Материал — тот же камень,
+// что у стен и у монстра (см. 2b): это не отдельная тварь, это стена дотянулась.
+function renderFaceArms(g,t){
+  const cx=VW/2, cy=VH*.5;
+  ctx.save();ctx.lineCap='round';
+  for(const a of mash.arms){
+    const reach=clamp((.30+.85*g)*a.lead,0,1.18);
+    const dx=cx-a.x, dy=cy-a.y, L=Math.hypot(dx,dy)||1;
+    const ox=-dy/L, oy=dx/L;
+    const N=a.seg, pts=[];
+    for(let i=0;i<=N;i++){
+      const s=i/N;
+      const w=Math.sin(t*3.2+a.seed+s*4.4)*26*s*(1-s*.35)+a.curl*s*s*30*g;
+      pts.push([a.x+dx*s*reach+ox*w, a.y+dy*s*reach+oy*w]);
+    }
+    for(let i=0;i<N;i++){
+      const th=a.w*(1-i/N*.72);
+      ctx.lineWidth=th;
+      ctx.strokeStyle='rgba(206,202,190,'+(.28+.5*g).toFixed(3)+')';
+      ctx.beginPath();ctx.moveTo(pts[i][0],pts[i][1]);ctx.lineTo(pts[i+1][0],pts[i+1][1]);ctx.stroke();
+      ctx.lineWidth=Math.max(1,th*.42);           // тёмная сердцевина: жгут, а не полоска
+      ctx.strokeStyle='rgba(6,8,10,.75)';
+      ctx.beginPath();ctx.moveTo(pts[i][0],pts[i][1]);ctx.lineTo(pts[i+1][0],pts[i+1][1]);ctx.stroke();
+    }
+    ctx.fillStyle='rgba(232,228,216,'+(.18+.45*g).toFixed(3)+')';
+    for(let i=2;i<N;i+=2){                        // присоски
+      const r=Math.max(1,a.w*(1-i/N*.72)*.30);
+      ctx.beginPath();ctx.arc(pts[i][0],pts[i][1],r,0,7);ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+function renderMash(){
+  const g=mash.grip;
+  ctx.fillStyle='rgba(10,4,4,'+(.40+.30*g).toFixed(3)+')';ctx.fillRect(0,0,VW,VH);
+  renderFaceArms(g,tGlobal);
+  // хватка сжимается — поле зрения глохнет с краёв, будто лицо закрывают
+  const vg=ctx.createRadialGradient(VW/2,VH/2,Math.min(VW,VH)*(.42-.32*g),
+                                    VW/2,VH/2,Math.max(VW,VH)*.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,'+(.5+.45*g).toFixed(3)+')');
+  ctx.fillStyle=vg;ctx.fillRect(0,0,VW,VH);
+  // подпись и полоска ушли вниз: середину занимает то, что тебя держит
+  ctx.fillStyle='#ff6b5a';ctx.font='21px "Courier New",monospace';ctx.textAlign='center';
+  ctx.fillText(mash.label,VW/2,VH*.80+jit(3+7*g));
+  const w=260,frac=clamp(mash.count/mash.need,0,1);
+  ctx.lineWidth=1;ctx.strokeStyle='#ff6b5a';
+  ctx.strokeRect(VW/2-w/2,VH*.835,w,12);
+  ctx.fillRect(VW/2-w/2,VH*.835,w*frac,12);
+  ctx.textAlign='left';
+}
+// Глаза ГОЛУБЫЕ — это цвет точек (PALETTE[1]). Красный означал бы просто «опасность»;
+// голубой говорит без слов: оно сделано из того же, из чего твой рисунок.
+// Красные глаза по краям экрана остаются за галлюцинациями безумия — так игрок
+// различает «мне мерещится» и «меня держат», не получив об этом ни строчки текста.
+function drawScareEyes(cx,cy,R,a,big){
+  if(a<=0)return;
+  const sep=R*1.15, jx=(rnd()-.5)*R*.08, jy=(rnd()-.5)*R*.08;
+  ctx.globalAlpha=clamp(a,0,1);
+  for(const sgn of [-1,1]){
+    const x=cx+sgn*sep+jx, y=cy+jy;
+    const g=ctx.createRadialGradient(x,y,0,x,y,R*1.9);
+    g.addColorStop(0,'rgba(79,216,255,.5)');g.addColorStop(1,'rgba(79,216,255,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,R*1.9,0,7);ctx.fill();
+    ctx.fillStyle='rgba(79,216,255,.93)';
+    ctx.beginPath();ctx.ellipse(x,y,R,R*.6,0,0,7);ctx.fill();
+    ctx.fillStyle='rgba(2,6,10,.96)';              // зрачок — вертикальная щель
+    ctx.beginPath();ctx.ellipse(x,y,R*.15,R*.5,0,0,7);ctx.fill();
+    if(big){ctx.fillStyle='rgba(255,255,255,.65)';
+      ctx.beginPath();ctx.arc(x-R*.32,y-R*.18,R*.07,0,7);ctx.fill();}
+  }
+  ctx.globalAlpha=1;
+}
+function renderScare(){
+  if(!scare)return;
+  const s=scare, u=clamp(s.t/s.dur,0,1), pre=s.t<SCARE.hit;
+  ctx.fillStyle='rgba(0,0,0,'+(pre?.58+.36*(s.t/SCARE.hit):.94)+')';
+  ctx.fillRect(0,0,VW,VH);
+
+  // глаза: до удара едва тлеют вдали, после — рвутся в лицо
+  const et=s.t-SCARE.hit;
+  const grow=clamp(et/(s.fatal?.8:.5),0,1), ease=1-Math.pow(1-grow,3);
+  const R=pre?4:(s.big?7+ease*Math.min(VW,VH)*.26:5+ease*22);
+  let ea=pre?clamp(s.t/SCARE.hit,0,1)*.25:1;
+  ea*=clamp((1-u)/.3,0,1);                          // гаснут в последней трети
+  drawScareEyes(VW/2,VH*.47,R,ea,s.big);
+
+  // точки и линии съедают экран — мир доигрывает за игрока его же полотно
+  const fade=clamp((1-u)/.25,0,1);
+  for(const st of s.strands){
+    let n=0; while(n<st.pts.length&&s.t>=st.pts[n].at)n++;
+    if(!n)continue;
+    ctx.globalAlpha=fade*.9;ctx.shadowColor=st.col;ctx.shadowBlur=10;
+    ctx.strokeStyle=st.col;ctx.lineWidth=1.6;
+    ctx.beginPath();
+    for(let i=0;i<n;i++){const q=st.pts[i];i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y);}
+    ctx.stroke();
+    ctx.fillStyle=st.col;
+    for(let i=0;i<n;i++){const q=st.pts[i];
+      ctx.beginPath();ctx.arc(q.x,q.y,2.5+Math.min(3,(s.t-q.at)*7),0,7);ctx.fill();}
+    ctx.shadowBlur=0;ctx.globalAlpha=1;
+  }
+  if(u>.78){ctx.fillStyle='rgba(0,0,0,'+clamp((u-.78)/.22,0,1)+')';ctx.fillRect(0,0,VW,VH);}
+}
+function renderHUD(){
+  if(state==='start'||state==='win'||state==='caught'||state==='lightout')return;  // скример и засвет занимают экран целиком
+  ctx.font='12px "Courier New",monospace';
+  ctx.fillStyle='rgba(122,168,143,.9)';
+  if(chase){ctx.fillStyle='#39FF9E';ctx.fillText('БЕГИ К ВЫХОДУ ПО ЛИНИИ',16,24);}
+  else ctx.fillText(prog.done<N_CANV?'ПОЛОТНО '+(prog.done+1)+'/'+N_CANV:'НАЙДИ ВЫХОД',16,24);
+  for(let i=0;i<madness.MAX;i++){
+    ctx.fillStyle=i<madness.errors?'#e0503c':'#1d1d26';
+    ctx.beginPath();ctx.arc(16+i*14,44,4,0,7);ctx.fill();
+    if(M_STAGE.indexOf(i+1)>=0){   // засечки на границах стадий
+      ctx.fillStyle='#3a3a48';ctx.fillRect(16+i*14+6,39,1,10);
+    }
+  }
+  if(madness.anger>0){ctx.fillStyle='#e0503c';ctx.fillText('ЯРОСТЬ +'+madness.anger,16+madness.MAX*14+12,48);}
+  if(hasWand){
+    ctx.fillStyle=flash.charged?'#ffe9a8':'#4a4436';
+    ctx.fillText(flash.charged?'ВСПЫШКА ГОТОВА [ПРОБЕЛ]':'ПЕРЕЗАРЯДКА '+Math.ceil(flash.cd)+'с',16,68);
+  } else {
+    ctx.fillStyle='#6a6252';ctx.fillText('ПАЛОЧКИ НЕТ',16,68);
+  }
+  if(DEV){
+    ctx.fillStyle=thread.on?'#9a7ad8':'#3b3350';
+    ctx.fillText(thread.on?'НИТЬ К ЦЕЛИ [G]':'НИТЬ ВЫКЛ [G]',16,88);
+    ctx.fillStyle=monLine.on?'#e25a46':'#4a3330';
+    ctx.fillText(monLine.on?'ЛИНИЯ К МОНСТРУ [M]':'ЛИНИЯ ВЫКЛ [M]',150,88);
+  }
+  if(prog.streak>0&&state!=='draw'){
+    ctx.fillStyle='#e0503c';
+    ctx.fillText('ПОИМКИ ПОДРЯД: '+prog.streak+'/'+DEATH_LIMIT,16,88+(DEV?20:0));
+  }
+  if(prog.monKills>0&&state!=='draw'){
+    ctx.fillStyle='#ff6b5a';
+    ctx.fillText('ОНО ДОСТАЛО ТЕБЯ: '+prog.monKills+'/'+DEATH_LIMIT,16,88+(DEV?20:0)+(prog.streak>0?20:0));
+  }
+  if(prog.fear>1&&state!=='draw'){   // на полотне тот же счётчик рисуется у таймера
+    ctx.fillStyle='#e0503c';
+    ctx.fillText('СТРАХ ×'+prog.fear.toFixed(1),16,108);
+  }
+  // Полоса ШУМА нужна игроку: без неё непонятно, почему перестал слышать монстра.
+  // Номер фазы — служебный, его видит только создатель.
+  if(state!=='draw'){
+    const y=prog.fear>1?128:108;
+    if(DEV){
+      ctx.fillStyle=phase===1?'#4d7a63':phase===2?'#b8a24a':'#e0503c';
+      ctx.fillText('ФАЗА '+phase,16,y);
+    }
+    if(phase>=2){
+      const w=70,h=5,x0=DEV?76:16;
+      ctx.fillStyle='#1d1d26';ctx.fillRect(x0,y-8,w,h);
+      ctx.fillStyle=noise>.55?'#e0503c':'#6f8f7f';ctx.fillRect(x0,y-8,w*noise,h);
+      ctx.fillStyle='rgba(122,168,143,.75)';ctx.fillText('ШУМ',x0+w+8,y);
+    }
+  }
+  if(DEV&&(thread.on||monLine.on)&&state!=='draw'){   // dev-строка: чем занят монстр и как далеко
+    const md=Math.sqrt(dist2(player.x,player.y,monster.x,monster.y))/CELL;
+    ctx.fillStyle=monster.mode==='roam'?'#4d5a7a':'#c05a6a';
+    ctx.fillText('МОНСТР: '+monster.mode+(monster.cutting?' сквозь камень':'')+
+      ' · '+md.toFixed(1)+' кл',16,(prog.fear>1?128:108)+20);
+  }
+
+  // палочка или книжка под рукой
+  if(state==='explore'&&wandAtHand()){
+    ctx.fillStyle='rgba(255,240,180,.95)';ctx.textAlign='center';
+    ctx.font='15px "Courier New",monospace';
+    ctx.fillText('E — ВЗЯТЬ ПАЛОЧКУ',VW/2,VH/2+42);
+    ctx.textAlign='left';ctx.font='12px "Courier New",monospace';
+  } else if(state==='explore'){
+    const bk=bookAtHand();
+    if(bk){
+      ctx.fillStyle='rgba(238,228,196,.9)';ctx.textAlign='center';
+      ctx.font='14px "Courier New",monospace';
+      ctx.fillText(bk.read?'E — перечитать':'E — прочитать',VW/2,VH/2+42);
+      ctx.textAlign='left';ctx.font='12px "Courier New",monospace';
+    }
+  }
+  // прицел
+  if(state==='explore'){
+    ctx.fillStyle='rgba(184,255,217,.5)';
+    ctx.beginPath();ctx.arc(VW/2,VH/2,1.6,0,7);ctx.fill();
+  }
+  if(!locked&&state!=='start'&&state!=='draw'){   // на полотне мышь отпущена намеренно — не зовём обратно
+    ctx.textAlign='center';
+    ctx.fillStyle='rgba(184,255,217,.85)';ctx.font='15px "Courier New",monospace';
+    ctx.fillText('ЗАЖМИ ТАЧПАД И ВЕДИ — ПОВОРОТ КАМЕРЫ',VW/2,VH-86);
+    ctx.fillStyle='rgba(122,168,143,.6)';ctx.font='12px "Courier New",monospace';
+    ctx.fillText(lockFailed?'(браузер не даёт захватить мышь — играем перетаскиванием)'
+                           :'щелчок по игре включит свободный обзор без зажатия',VW/2,VH-66);
+    ctx.textAlign='left';
+  }
+  if(msgT>0){
+    ctx.fillStyle='rgba(184,255,217,'+clamp(msgT,0,1)+')';
+    ctx.font='14px "Courier New",monospace';ctx.textAlign='center';
+    ctx.fillText(msg,VW/2,VH-36);
+    ctx.textAlign='left';
+  }
+}
+
+// ============ main loop ============
+function loop(t){
+  requestAnimationFrame(loop);
+  const dt=Math.min(.05,(t-lastT)/1000||0);lastT=t;tGlobal+=dt;
+  if(msgT>0)msgT-=dt;
+  if(wall)updWall(dt);   // тикает и во время QTE, поэтому не в updExplore
+  if(state==='explore')updExplore(dt);
+  else if(state==='draw')updDraw(dt);
+  else if(state==='mash'){
+    updMash(dt);
+    // Пока игрок бьётся в QTE, монстр НЕ стоит: он продолжает идти.
+    // Схватить в этот момент он не может — поимка проверяется только в explore.
+    updMonster(dt);
+  }
+  else if(state==='lightout'){
+    lightT+=dt;
+    if(lightT>=3.1)win();
+  }
+  else if(state==='caught'){
+    caughtT-=dt;updScare(dt);
+    if(caughtT<=0){ if(scare&&scare.fatal)gameOver(); else respawn(); }
+  }
+  // state==='note' — мир стоит, игрок читает
+  render();
+}
+requestAnimationFrame(loop);
+
+// ============ старт / рестарт ============
+// Полный сброс состояния внутри страницы — без перезагрузки.
+// Лабиринт генерится один раз по фиксированному сиду, так что он тот же самый.
+function resetGame(){
+  // ПЕРЕСОБИРАЕМ МИР ПЕРВЫМ ДЕЛОМ. Игрок и монстр расставляются от START и WALL_SKIN —
+  // если сделать это до сборки, они окажутся в координатах прошлого лабиринта.
+  buildWorld();   // новый забег — новый лабиринт
+  pickShapes();   // ...и новые шесть фигур
+  Object.assign(player,{x:cellCX(START[1]),y:cellCY(START[0]),ang:START_ANG,pitch:0,bob:0,
+    stepT:0,wallTouch:0,invuln:0});
+  quickTurn=0;
+  // Монстр начинает партию ВНУТРИ стены, как можно дальше от игрока.
+  const wcs=WALL_SKIN;
+  let wb=wcs[0],wd=-1;
+  for(const [r,c] of wcs){
+    const d=dist2(cellCX(c),cellCY(r),cellCX(START[1]),cellCY(START[0]));
+    if(d>wd){wd=d;wb=[r,c];}
+  }
+  Object.assign(monster,{x:cellCX(wb[1]),y:cellCY(wb[0]),mode:'inwall',target:null,path:[],
+    pathT:0,stun:0,visible:false,seeT:0,lost:0,prev:null});
+  Object.assign(flash,{charged:true,cd:0});
+  Object.assign(madness,{errors:0,anger:0});
+  Object.assign(prog,{done:0,fear:1,deaths:0,streak:0,monKills:0,startTime:tGlobal});
+  wall=null;
+  Object.assign(guide,{used:false,trail:null,trailT:0,drawing:false});
+  chase=null;mash=null;draw=null;lightT=0;scare=null;scareQuiet=0;lastScare=false;grabQuiet=0;lastGrab=false;monScareT=-999;
+  canvasArm=true;ambushDone=false;ambushT=-1;
+  msg='';msgT=0;caughtT=0;sndSkitT=0;sndHeartT=0;sndBreathT=0;sndRingT=0;eyes=[];
+  note=null;for(const t of TABLES)t.read=false;
+  hasWand=false;wandHintT=0;
+  const st=TABLES[TABLES.length-1];st.wand=true;   // палочка снова на стартовом столе
+  phase=1;noise=0;noisePeak=0;cut=null;nestsHit=0;safeSit=0;lashT=rr(LASH.first);
+  monster.trail=[];monster.burstT=0;monster.chaseT=0;
+  for(const d of DECOR)d.used=false;
+  thread.path=null;thread.t=0;monLine.path=null;monLine.t=0;
+  visited.clear();
+  if(AC&&DUCK){DUCK.gain.cancelScheduledValues(AC.currentTime);DUCK.gain.value=1;}
+  for(const k in keys)keys[k]=false;    // иначе зажатая клавиша «залипнет» на новую партию
+  document.getElementById('startOv').classList.add('hidden');
+  document.getElementById('winOv').classList.add('hidden');
+  document.getElementById('overOv').classList.add('hidden');
+  state='explore';
+  grabMouse();
+  say('Темно. За спиной что-то лежит.',5);
+}
+// Звук НЕ должен мочь заблокировать старт. Раньше initAudio() стоял первым и без защиты:
+// если AudioContext не создавался (Safari, блокировщики, жёсткие настройки приватности),
+// исключение убивало обработчик до resetGame — кнопка выглядела мёртвой, а в консоли пусто.
+function startAudioSafely(){
+  try{ initAudio(); if(AC&&AC.resume)AC.resume(); }
+  catch(e){ console.warn('Звук недоступен, играем без него:',e); }
+}
+setDev(DEV,false);   // подтянуть состояние из хранилища: показать/скрыть подсказку и линии
+document.getElementById('startBtn').onclick=()=>{startAudioSafely();resetGame();};
+document.getElementById('againBtn').onclick=()=>{startAudioSafely();resetGame();};
+document.getElementById('overBtn').onclick=()=>{startAudioSafely();resetGame();};
+})();
+</script>
+
+<script>
+// Последняя страховка: если по любой причине обработчик кнопки не навесился,
+// игрок должен увидеть причину, а не тыкать в мёртвую кнопку.
+(function(){
+  var b=document.getElementById('startBtn'), d=document.getElementById('bootErr');
+  if(b&&!b.onclick&&d&&d.classList.contains('hidden')){
+    d.classList.remove('hidden');
+    d.textContent='Скрипт игры не догрузился до конца, кнопка осталась без обработчика. '+
+      'Открой консоль (Cmd+Option+J) и покажи красную строку.';
+  }
+})();
+</script>
+</body>
+</html>
