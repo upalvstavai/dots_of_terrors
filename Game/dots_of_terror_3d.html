@@ -26,7 +26,7 @@
 <canvas id="cv"></canvas>
 
 <div id="startOv" class="overlay">
-  <h1>DOTS OF TERROR3</h1>
+  <h1>DOTS OF TERROR</h1>
   <p style="color:#4d7a63">3D · от первого лица · чернильный каркас · только для ПК</p>
   <p>
     Ты просыпаешься в полной темноте. <b>Обернись — на столе позади лежит палочка.</b><br>
@@ -42,13 +42,16 @@
     <kbd>ESC</kbd> — отпустить мышь (на полотне — выйти)<br><br>
     На полотне курсор снова обычный — тыкай точки тачпадом как везде.<br>
     Соединяй их по порядку цветов внизу.<br>
-    Одинаковых цветов несколько — ищи слабые номерки.<br>
+    Одинаковых цветов несколько — смотри на номерки у точек.<br>
     Каждая соединённая точка съедает 2 секунды таймера.<br><br>
     <span class="warn">Каждая ошибка и каждая поимка навсегда делают лабиринт хуже.<br>
     Слушай, с какой стороны оно скребёт. Играй в наушниках.</span><br><br>
     Палочка помечает пол там, где ты уже был.<br>
-    <kbd>E</kbd> — прочитать книжку на столе. Столы стоят в тупиках.<br>
-    <span class="warn">Три поимки подряд — и всё сначала. Серия сбрасывается сданным полотном.</span><br>
+    <kbd>E</kbd> — прочитать книжку на столе. Столы стоят в тупиках и в нишах у полотен.<br>
+    <kbd>J</kbd> — дневник: всё, что ты успел прочитать. Он копится между попытками.<br>
+    <b>Услышал, как трещит камень за спиной — ОБЕРНИСЬ.</b> На что смотришь, то не хватает.<br>
+    <span class="warn">Три поимки подряд — и всё сначала. Серия сбрасывается сданным полотном.<br>
+    Но три поимки самим монстром убивают в любом случае — они не прощаются.</span><br>
     Последнее полотно откроет выход — и сорвёт его с цепи.<br><br>
     <span class="dev hidden" id="devHint">ДЛЯ СОЗДАТЕЛЯ: <kbd>G</kbd> — нить к цели, <kbd>M</kbd> — линия к монстру.</span>
   </p>
@@ -192,8 +195,16 @@ function unduck(){
 }
 function nbuf(d){const b=AC.createBuffer(1,AC.sampleRate*d,AC.sampleRate),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=rnd()*2-1;return b;}
 // pan: -1 слева, +1 справа. Без него монстра слышно, но непонятно откуда.
+// РАЗБРОС. Шумовая начинка у нас и так каждый раз новая, а вот высота, длина
+// и огибающая повторялись один в один — ухо цепляется именно за них, и удар
+// приедался за десяток повторов. Теперь каждый выстрел чуть другой.
+// Для шумов и воя разброс щедрый, для чистых тонов скупой: sfx.ok играет
+// восходящий ряд по соединённым точкам, и заметная расстройка звучала бы фальшью.
+const V_NOISE=.16, V_TONE=.05, V_DUR=.20;
+const vary=(v,a)=>v*(1+(rnd()-.5)*a);
 function playNoise(dur,freq,vol,type,pan){
   if(!AC)return;
+  dur=vary(dur,V_DUR); freq=vary(freq,V_NOISE);
   const s=AC.createBufferSource();s.buffer=nbuf(dur);
   const f=AC.createBiquadFilter();f.type=type||'lowpass';f.frequency.value=freq;
   const g=AC.createGain();g.gain.setValueAtTime(vol,AC.currentTime);
@@ -206,6 +217,7 @@ function playNoise(dur,freq,vol,type,pan){
 }
 function tone(fr,dur,vol,type){
   if(!AC)return;
+  fr=vary(fr,V_TONE); dur=vary(dur,V_DUR);
   const o=AC.createOscillator(),g=AC.createGain();
   o.type=type||'sine';o.frequency.value=fr;
   g.gain.setValueAtTime(vol,AC.currentTime);
@@ -215,6 +227,8 @@ function tone(fr,dur,vol,type){
 // Скользящая частота — основа воя. Без неё крик получается ровным гудком.
 function sweep(f0,f1,dur,vol,type){
   if(!AC)return;
+  const k=1+(rnd()-.5)*V_NOISE;      // весь вой смещаем целиком, чтобы он не «ломался»
+  f0*=k; f1*=k; dur=vary(dur,V_DUR);
   const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime;
   o.type=type||'sawtooth';
   o.frequency.setValueAtTime(f0,t);
@@ -235,10 +249,16 @@ const sfx={
   err:()=>tone(210,.3,.35,'square'),
   screech:()=>{playNoise(.9,900,.55,'bandpass');tone(66,1.2,.5,'sawtooth');},
   flash:()=>{playNoise(.5,3000,.5,'highpass');tone(880,.4,.3);},
-  grab:()=>{tone(90,.5,.5,'sawtooth');playNoise(.4,300,.4);},
+  grab:()=>{tone(90,.5,.72,'sawtooth');playNoise(.4,300,.6);},
   door:()=>{tone(520,.5,.22);tone(780,.8,.16);},
   tick:()=>tone(1200,.04,.1,'square'),
-  whip:()=>{playNoise(.09,1600,.3,'bandpass');tone(140,.12,.18,'sawtooth');},
+  // Удар щупальца: в полтора раза громче прежнего и резче. Резкость даёт не громкость,
+  // а короткий высокий щелчок в начале — без него это был глухой шорох.
+  whip:()=>{
+    playNoise(.05,4200,.5,'highpass');            // щелчок рассекаемого воздуха
+    playNoise(.10,1600,.45,'bandpass');
+    tone(140,.12,.27,'sawtooth');
+  },
   // ---- голоса скримера ----
   scream:()=>{                       // сам удар: крик + восходящий вой + провал низа
     playNoise(1.15,2200,.9,'bandpass');
@@ -254,6 +274,10 @@ const sfx={
     playNoise(.55,2600,.8,'bandpass');
     sweep(230,1700,.28,.5,'sawtooth');
     playNoise(.22,160,.6);
+  },
+  creak:pan=>{                       // камень идёт трещиной: то, что слышно ДО удара
+    playNoise(.55,240,.34,'lowpass',pan);
+    tone(58,.6,.16,'sawtooth');
   },
   thud:()=>{                         // тихая поимка: глухо и коротко, без крика
     playNoise(.22,300,.3);
@@ -403,6 +427,71 @@ let WALL_SKIN=[];   // камень, граничащий с полом
 // на столе книжечка. Это единственная вещь, дающая лабиринту смысл вне навигации.
 const NOTE_REACH=CELL*1.0;      // с какого расстояния можно прочесть
 const TABLES=[];                // {x,y,ux,uy,dx,dy,text,wand}
+// ============ КОМНАТКИ У ПОЛОТЕН ============
+// Записки лежали в тупиках, а тупик по построению ВСЕГДА в стороне от дороги: замер
+// на 200 картах дал крюк в 14.4 клетки, и до ближайшего к полотну тупика в среднем
+// ещё 9. Игрок прочитывал две-три записки из восьми, а на двух из них держится
+// вторая часть. Поэтому рядом с каждым полотном вырезается своя комнатка 2×2
+// с одним входом. Полотно игрок обойти не может — значит, мимо комнаты он пройдёт.
+// Но вход в неё всё-таки в стороне: находка должна оставаться находкой, а не выдачей.
+const ROOM_NEAR=[2,5];          // на каком удалении от полотна искать место под комнату
+const ROOMS=[];                 // {cells,entry,from,canv}
+function carveRooms(){
+  ROOMS.length=0;
+  // Стены, на которых висят находки, трогать нельзя — иначе вешать будет не на что.
+  const keep=new Set();
+  for(const cell of [...CANV,GUIDE].filter(Boolean)){
+    const f=wallFaceOf(cell);
+    if(f)keep.add((cell[0]+f.dr)*COLS+(cell[1]+f.dc));
+  }
+  const solid=(r,c)=>r>=1&&c>=1&&r<ROWS-1&&c<COLS-1&&grid[r][c]===1&&!keep.has(r*COLS+c);
+  for(let ci=0;ci<CANV.length;ci++){
+    const cv=CANV[ci]; if(!cv)continue;
+    const b=bfs(cv[0],cv[1]);
+    const cand=floors.filter(([r,c])=>b.D[r][c]>=ROOM_NEAR[0]&&b.D[r][c]<=ROOM_NEAR[1])
+                     .sort((x,y)=>b.D[x[0]][x[1]]-b.D[y[0]][y[1]]);
+    let made=null;
+    for(const [pr,pc] of cand){
+      for(const [dr,dc] of DIRS4){
+        const wr=pr+dr, wc=pc+dc;                 // клетка входа: перегородка у коридора
+        if(!solid(wr,wc))continue;
+        // Комната — три клетки: вход и два кармана ПОПЕРЁК направления входа.
+        // Сплошного блока 2×2 в этом лабиринте не бывает никогда: коридоры стоят
+        // по нечётным координатам, поэтому в любом квадрате 2×2 одна клетка — пол.
+        // Первая версия искала именно 2×2 и не вырезала ни одной комнаты на 200 картах.
+        const sr=dc?1:0, sc=dc?0:1;               // поперёк входа
+        const aR=wr+sr, aC=wc+sc, bR=wr-sr, bC=wc-sc;
+        if(!solid(aR,aC)||!solid(bR,bC))continue;
+        const cells=[[wr,wc],[aR,aC],[bR,bC]];
+        for(const [r,c] of cells)grid[r][c]=0;
+        made={cells,entry:[wr,wc],from:[pr,pc],canv:ci};
+        break;
+      }
+      if(made)break;
+    }
+    if(made)ROOMS.push(made);
+  }
+}
+// ЗАПИСКИ. Раньше на всех столах лежала одна и та же фраза — второй стол уже ничего
+// не добавлял, и тупики снова становились «свернул не туда». Теперь каждая записка своя
+// и они складываются в историю: существо не отсюда, кто-то его разозлил, кого-то обманули,
+// и ему нужен КТО-ТО конкретный. Прямо не сказано ничего — догадка остаётся за игроком.
+// Порядок случайный: игрок собирает обрывки не по порядку, как и должно быть с чужими
+// записями. Хронология тут была бы ложью.
+const NOTES=[
+  'это существо не из нашего мира',
+  'не доверяй ему',
+  'он бог',
+  'мы его разозлили и он нам мстит',
+  'меня обманули',
+  'ему нужен он',
+  'никому не доверяй',
+];
+// Ключевые фразы кладём в САМЫЕ ДОСТУПНЫЕ места. Замер показал: до среднего стола
+// крюк 14.4 клетки, и до дальних игрок не доходит никогда. Значит, порядок фраз
+// по столам не может быть случайным — те, на которых держится лор, обязаны лежать
+// там, куда человек заглянет мимоходом. Остальные раскиданы как попало.
+const KEY_NOTES=['не доверяй ему','никому не доверяй','ему нужен он'];
 function deadEndCells(){
   const out=[];
   for(const [r,c] of floors){
@@ -585,6 +674,13 @@ function buildWorld(){
       if(best)used.push(best);return best;})();
     SAFE=[START.slice(),placeAt(.54)];
     GUIDE=placeAt(.5);
+    // Комнатки режем ПОСЛЕ размещения находок и ДО всего, что считается по сетке:
+    // грани, кожа стен, украшения и расстояния должны знать о новых проходах.
+    carveRooms();
+    base=bfs(START[0],START[1]);
+    maxD=0;floors=[];
+    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)
+      if(grid[r][c]===0&&isFinite(base.D[r][c])){floors.push([r,c]);maxD=Math.max(maxD,base.D[r][c]);}
     CANV_FACE=CANV.map(c=>c?wallFaceOf(c):null);
     GUIDE_FACE=GUIDE?wallFaceOf(GUIDE):null;
     WALL_SKIN=wallCellsNearFloor();
@@ -605,16 +701,55 @@ const player={x:cellCX(START[1]),y:cellCY(START[0]),r:11,speed:160,stepT:0,wallT
 
 function makeTables(){
   TABLES.length=0;
+  const notes=NOTES.filter(t=>KEY_NOTES.indexOf(t)<0);
+  for(let i=notes.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[notes[i],notes[j]]=[notes[j],notes[i]];}
+  const order=KEY_NOTES.concat(notes);
+  let ni=0;
   const busy=new Set([START,...CANV,GUIDE,EXIT,...SAFE].map(c=>c[0]*COLS+c[1]));
-  for(const de of deadEndCells()){
+  // маршрут игрока: старт → полотна по порядку → выход
+  const route=new Set();
+  const stops=[START,...CANV,EXIT].filter(Boolean);
+  for(let k=0;k<stops.length-1;k++){
+    const b=bfs(stops[k][0],stops[k][1]);
+    if(!isFinite(b.D[stops[k+1][0]][stops[k+1][1]]))continue;
+    for(const [r,c] of pathTo(b.P,stops[k+1][0],stops[k+1][1]))route.add(r*COLS+c);
+  }
+  const des=deadEndCells().filter(de=>!busy.has(de.cell[0]*COLS+de.cell[1]));
+  for(const de of des){                       // насколько тупик в стороне от дороги
+    const b=bfs(de.cell[0],de.cell[1]);
+    let best=Infinity;
+    for(const key of route){
+      const d=b.D[Math.floor(key/COLS)][key%COLS];
+      if(d<best)best=d;
+    }
+    de.detour=best;
+  }
+  des.sort((a,b)=>a.detour-b.detour);
+  // СНАЧАЛА комнаты у полотен — туда ложатся ключевые фразы, потому что мимо них
+  // игрок пройдёт обязательно. Тупики забирают остальное.
+  for(const rm of ROOMS){
+    let best=null,bd=-1;
+    for(const [r,c] of rm.cells){
+      const d=Math.abs(r-rm.from[0])+Math.abs(c-rm.from[1]);
+      if(d>bd&&!busy.has(r*COLS+c)){bd=d;best=[r,c];}
+    }
+    if(!best)continue;
+    const [r,c]=best;
+    const odr=Math.sign(rm.from[0]-r), odc=Math.sign(rm.from[1]-c);   // куда выход
+    TABLES.push({
+      x:cellCX(c)-odc*9, y:cellCY(r)-odr*9,
+      dx:-odc, dy:-odr,
+      ux:odr?1:0, uy:odr?0:1,
+      text:order[ni++%order.length], wand:false, read:false});
+  }
+  for(const de of des){
     const [r,c]=de.cell;
-    if(busy.has(r*COLS+c))continue;
     const [dr,dc]=de.out;                       // куда открыт тупик
     TABLES.push({
       x:cellCX(c)-dc*9, y:cellCY(r)-dr*9,       // стол придвинут к глухому концу
       dx:-dc, dy:-dr,                           // «от игрока в глубину»
       ux:dr?1:0, uy:dr?0:1,                     // длинная сторона столешницы
-      text:'Никому не доверяй', wand:false, read:false});
+      text:order[ni++%order.length], wand:false, read:false});
   }
   // Стартовый стол — прямо за спиной игрока в его же клетке.
   const bx=-Math.cos(START_ANG), by=-Math.sin(START_ANG);
@@ -650,10 +785,20 @@ const monster={x:0,y:0,mode:'inwall',target:null,path:[],pathT:0,stun:0,speed:90
   visible:false,gone:0,seeT:0,lost:0,prev:null,trail:[],trailT:0,burstT:0,chaseT:0,cutting:false};
 const SIGHT_RANGE=CELL*7;  // на сколько монстр видит игрока по прямой
 const HUNT_SPEED=118;      // медленнее игрока (160): можно рассмотреть и уйти
+// Потолок скорости монстра — ровно полтора игрока. Быстрее нельзя: от такого не убежать
+// в принципе, и лабиринт превращается в коридор смерти. Разгон идёт от ярости и упирается
+// в потолок ровно на ANGER_MAX, а не растёт бесконечно.
+const MON_SPEED_MAX=240;   // = player.speed * 1.5
+function angerK(){return clamp(madness.anger/ANGER_MAX,0,1);}
+function monSpeed(base){return base+(MON_SPEED_MAX-base)*angerK();}
 const HUNT_LOSE=4;         // сек без прямой видимости — теряет след
 const flash={charged:true,cd:0,CD:60};
 // Потолок 9, а не 6: полотен теперь шесть, на последних по 15 с, и поимка тоже
 // добавляет ошибку — со старым потолком третья стадия наступала почти гарантированно.
+// ANGER_MAX — потолок ярости. Раньше её не было вовсе: счётчик рос без предела,
+// а скорость монстра считалась как база + ярость×8, то есть при сорока ошибках он
+// разгонялся втрое быстрее игрока и погоня переставала быть игрой.
+const ANGER_MAX=30;
 const madness={errors:0,MAX:9,anger:0};
 const M_STAGE=[3,6,9];   // границы стадий
 const mStage=()=>madness.errors>=M_STAGE[2]?3:madness.errors>=M_STAGE[1]?2:madness.errors>=M_STAGE[0]?1:0;
@@ -662,6 +807,51 @@ const prog={done:0,fear:1,deaths:0,streak:0,monKills:0,startTime:0}; // fear —
 // щупальца из стены: вылезают в 2–4 клетках от игрока, предпочтительно за спиной
 const WALL_BACK=[2,4];
 const WALL_STRIKE=1.2;   // сек удара, потом уходит обратно в стену
+// ТЕЛЬ. Хватающие щупальца появлялись и хватали в ОДНОМ кадре, да ещё из-за спины.
+// Это даёт вздрагивание, но не страх: страх живёт в ожидании, а ожидать было нечего.
+// Показательно, что у безвредных выпрыгиваний фаза показа была (0.9 с), а у опасных —
+// нулевая. Ровно наоборот тому, как надо. Теперь стена сначала трещит и тянется.
+// И это не декорация: за эту секунду можно отойти, и тогда хлестнёт по пустоте.
+// Без такой возможности предупреждение было бы просто отсрочкой неизбежного.
+const TELL=.85;                 // сколько стена дышит перед ударом
+// Спасает не бегство, а ВЗГЛЯД. Отойти в лабиринте почти невозможно: удар назначается
+// за спину, и за 0.85 с по коридорам разрыв растёт всего на 0.3 клетки — замерено,
+// побег не работал ни на каком пороге. Зато обернуться можно всегда, и это ровно то
+// поведение, которому игра учит с первой строчки: «слушай, с какой стороны скребёт».
+// Теперь у слуха появилась цена: услышал треск — разворачивайся, иначе схватит.
+// Прямая видимость НЕ требуется: удар назначается за спину, а там часто угол коридора,
+// и «обернулся, но между вами камень» срывало спасение в половине случаев. Реагируешь
+// ты на звук, а не на картинку — значит и засчитывать надо поворот, а не обзор.
+// Конус широкий (±70°): рывковый разворот по Q даёт примерно 180°, а место удара
+// редко лежит ровно за спиной — при узком конусе Q не спасал вообще.
+const TELL_LOOK=.35;            // косинус угла: примерно ±70° от направления взгляда
+function wallPan(f){
+  const dx=f.x-player.x, dy=f.y-player.y, l=Math.hypot(dx,dy)||1;
+  return clamp((dx*-Math.sin(player.ang)+dy*Math.cos(player.ang))/l,-1,1);
+}
+function wallStrikeNow(){
+  const w=wall; if(!w)return;
+  w.phase='strike'; w.t=0;
+  const dx=w.face.x-player.x, dy=w.face.y-player.y, l=Math.hypot(dx,dy)||1;
+  const seen=(dx*Math.cos(player.ang)+dy*Math.sin(player.ang))/l>TELL_LOOK;
+  sfx.whip();
+  if(seen||w.miss){
+    sfx.screech();
+    player.invuln=1.2;
+    say(seen?'Ты обернулся — и оно втянулось обратно в камень.':'Хлестнуло у самого лица.',3);
+    return;
+  }
+  sfx.grab();
+  if(w.kind==='nest'){
+    startMash('ЩУПАЛЬЦА! ЖМИ ПРОБЕЛ!',12,2.6,
+      ()=>{player.invuln=2;say('Вырвался. Оно уползло обратно в стену.',4);},
+      ()=>caught('nest'),'nest');
+  } else {
+    startMash('ЩУПАЛЬЦА ИЗ СТЕНЫ! ЖМИ ПРОБЕЛ!',12,2.8,
+      ()=>{player.invuln=2;say('Вырвался. Стена снова притворилась стеной.',4);},
+      ()=>caught('lash'),'lash');
+  }
+}
 let wall=null;
 let chase=null;
 let mash=null;
@@ -671,6 +861,27 @@ let canvasArm=true;
 let ambushDone=false,ambushT=-1;
 let msg='',msgT=0,caughtT=0;
 let note=null;          // открытая записка: {text,t}
+// ============ ДНЕВНИК ЗАПИСОК ============
+// Столы стоят в тупиках, то есть всегда в стороне от дороги. Замер на 200 картах:
+// на маршруте лежит 0.3 стола, остальным нужен крюк в среднем 9.4 клетки — игрок
+// за забег прочитывает две-три записки из восьми. А лабиринт каждый раз новый,
+// вернуться к прочитанному нельзя, и у двух игроков наборы разные.
+// Для лора это смертельно: обрывки должны сложиться в голове, а они не встречаются.
+// Дневник копится МЕЖДУ забегами (localStorage): за два-три прохождения игрок
+// соберёт всё, сможет перечитать рядом и — главное — сфотографировать.
+const NOTE_START='Я не могу себя долго контролировать';
+let journal=[];
+function loadJournal(){
+  try{const j=JSON.parse(localStorage.getItem('dot_journal')||'[]');
+      if(Array.isArray(j))journal=j.filter(x=>typeof x==='string');}catch(e){}
+}
+function saveJournal(){ try{localStorage.setItem('dot_journal',JSON.stringify(journal));}catch(e){} }
+function addToJournal(text){
+  if(journal.indexOf(text)>=0)return false;
+  journal.push(text);saveJournal();return true;
+}
+function noteTotal(){return NOTES.length+1;}   // семь на столах плюс стартовая
+loadJournal();
 let hasWand=false;      // без палочки нет света: игра начинается в темноте
 let wandHintT=0;        // через сколько подсказать, что надо обернуться
 let sndSkitT=0,sndHeartT=0,sndBreathT=0,sndRingT=0,eyes=[];
@@ -766,6 +977,14 @@ addEventListener('keydown',e=>{
     }
   }
   if(e.code==='Escape'&&state==='note')closeNote();
+  if(e.code==='KeyJ'){
+    if(state==='journal'){state='explore';grabMouse();}
+    else if(state==='explore'||state==='note'){
+      if(state==='note')note=null;
+      state='journal';releaseMouse();
+    }
+  }
+  if(e.code==='Escape'&&state==='journal'){state='explore';grabMouse();}
   // чувствительность камеры прямо в игре: - слабее, = сильнее
   if(e.code==='Minus'||e.code==='BracketLeft'||e.code==='NumpadSubtract'){
     sensMul=clamp(sensMul-.15,.4,3);say('Чувствительность камеры ×'+sensMul.toFixed(2),2);
@@ -800,7 +1019,7 @@ cv.addEventListener('mousemove',e=>{
     mouse.x=e.clientX;mouse.y=e.clientY;
     return;
   }
-  if(state==='note')return;                  // читаешь — камера стоит
+  if(state==='note'||state==='journal')return;   // читаешь — камера стоит
   if(state==='draw'){
     mouse.x=clamp(mouse.x+e.movementX,0,VW);
     mouse.y=clamp(mouse.y+e.movementY,0,VH);
@@ -981,7 +1200,7 @@ function drawClick(mx,my){
 // Единственная точка роста безумия. Растёт от двух вещей: ошибок рисования и поимок.
 function addMadness(reason){
   madness.errors++;
-  if(madness.errors>madness.MAX)madness.anger++;
+  if(madness.errors>madness.MAX)madness.anger=Math.min(ANGER_MAX,madness.anger+1);
   say(reason+' Лабиринт это запомнил.');
   if(madness.errors===M_STAGE[0])say('Стены начали шевелиться.',4);
   if(madness.errors===M_STAGE[1])say('В темноте кто-то смотрит.',4);
@@ -1046,7 +1265,11 @@ function wallSpotBehind(){
     if(!f)continue;
     const vx=cellCX(c)-player.x, vy=cellCY(r)-player.y, l=Math.hypot(vx,vy)||1;
     const dot=(vx*fx+vy*fy)/l;                 // -1 = ровно за спиной, +1 = прямо по курсу
-    let score=-dot*3;                          // «позади» весит больше всего
+    // Строго за спиной. Раньше вес «позади» перебивался бонусами за дистанцию и обзор,
+    // и удар нередко назначался туда, куда игрок УЖЕ смотрит. С механикой взгляда это
+    // означало случайное спасение в 65% случаев — угроза обесценивалась сама собой.
+    if(dot>.1)continue;
+    let score=-dot*6;                          // «позади» весит больше всего
     if(d>=WALL_BACK[0]&&d<=WALL_BACK[1])score+=2;                        // нужная дистанция
     if(losClear(player.x,player.y,cellCX(c),cellCY(r)))score+=1.5;       // будет видно, когда обернёшься
     if(score>bs){bs=score;best=f;}
@@ -1063,8 +1286,12 @@ function makeArms(face){
 function updWall(dt){
   if(state!=='explore'&&state!=='mash')return;   // на полотне и в поимке ждём
   wall.t+=dt;
-  if(wall.kind==='nest'||wall.kind==='lash'){    // уже схватило, просто держится в кадре
-    if(wall.t>=2.2&&state!=='mash')wall=null;
+  if(wall.kind==='nest'||wall.kind==='lash'){
+    if(wall.phase==='show'){                     // стена дышит: игрок ещё может уйти
+      if(wall.t>=TELL)wallStrikeNow();
+      return;
+    }
+    if(wall.t>=2.2&&state!=='mash')wall=null;    // схватило — держится в кадре
     return;
   }
   // выпрыгивание в фазе 3: показалось, хлестнуло воздух и ушло. Пугает, но не хватает —
@@ -1390,7 +1617,7 @@ function updMonster(dt){
       monster.cutting=cut;
       monster.path=isFinite(b.D[pr][pc])?pathTo(b.P,pr,pc):null;
     }
-    const sp=(monster.mode==='chase'?146:monster.mode==='hunt'?HUNT_SPEED:110)+madness.anger*8;
+    const sp=monSpeed(monster.mode==='chase'?146:monster.mode==='hunt'?HUNT_SPEED:110);
     followPath(sp*dt);
   } else { // roam
     if(!monster.target||dist2(monster.x,monster.y,monster.target[0],monster.target[1])<16){
@@ -1410,7 +1637,7 @@ function updMonster(dt){
     }
     if(monster.target){
       const dx=monster.target[0]-monster.x,dy=monster.target[1]-monster.y,l=Math.hypot(dx,dy)||1;
-      const sp=(90+madness.anger*10)*dt;
+      const sp=monSpeed(90)*dt;
       monster.x+=dx/l*sp;monster.y+=dy/l*sp;
     }
   }
@@ -1420,7 +1647,10 @@ function updMonster(dt){
     if((monster.mode==='chase'||monster.mode==='hunt')&&d<26){
       sfx.grab();
       startMash('ЖМИ ПРОБЕЛ! ВЫРЫВАЙСЯ!',12,3,
-        ()=>{monster.stun=2.2;player.invuln=2;say('Вырвался! Беги!');},
+        // Вырвался — значит получил фору. Раньше он замирал на 2.2 с при неуязвимости
+        // игрока в 2 с и на разогнанной скорости хватал снова почти мгновенно: побег
+        // ничего не давал. Теперь пауза настоящая — успеть отбежать и свернуть.
+        ()=>{monster.stun=4.5;player.invuln=3.2;say('Вырвался! Беги!');},
         ()=>caught('monster'),'monster');
     } else if(phase>=3&&monster.mode==='roam'&&mStage()>=3&&d<24){
       caught('monster');
@@ -1494,19 +1724,12 @@ function updLash(dt){
   const face=wallSpotBehind();
   if(!face){lashT=4;return;}                   // рядом нет стены — попробуем чуть позже
   const miss=rnd()<LASH.missChance;
-  wall={n:0,kind:'lash',face,arms:makeArms(face),t:0,phase:'strike'};
+  wall={n:0,kind:'lash',face,arms:makeArms(face),t:0,phase:'show',miss:miss,
+        d0:Math.sqrt(dist2(player.x,player.y,face.x,face.y))};
   duckAudio(.2);
   addNoise(miss?.2:.35);
-  if(miss){                                  // хлестнуло мимо — только испуг
-    sfx.whip();sfx.screech();
-    player.invuln=1.2;
-    say('Хлестнуло у самого лица.',3);
-  } else {
-    sfx.grab();sfx.screech();
-    startMash('ЩУПАЛЬЦА ИЗ СТЕНЫ! ЖМИ ПРОБЕЛ!',12,2.8,
-      ()=>{player.invuln=2;say('Вырвался. Стена снова притворилась стеной.',4);},
-      ()=>caught('lash'),'lash');
-  }
+  sfx.creak(wallPan(face));                  // камень треснул — удар будет через TELL
+  say('Стена за спиной шевельнулась. ОБЕРНИСЬ.',1.6);
 }
 
 // ============ ФАЗА 1: гнёзда щупалец в стенах ============
@@ -1535,12 +1758,11 @@ function startNestCutscene(d){
   duckAudio(.7);
 }
 function nestStrike(d){
-  wall={n:0,kind:'nest',face:d,arms:makeArms(d),t:0,phase:'strike'};
-  sfx.grab();sfx.screech();
+  wall={n:0,kind:'nest',face:d,arms:makeArms(d),t:0,phase:'show',miss:false,
+        d0:Math.sqrt(dist2(player.x,player.y,d.x,d.y))};
+  sfx.creak(wallPan(d));
   addNoise(.4);
-  startMash('ЩУПАЛЬЦА! ЖМИ ПРОБЕЛ!',12,2.6,
-    ()=>{player.invuln=2;say('Вырвался. Оно уползло обратно в стену.',4);},
-    ()=>caught('nest'),'nest');
+  say('Из стены что-то лезет. СМОТРИ НА НЕЁ.',1.6);
 }
 function updCut(dt){
   cut.t+=dt;
@@ -1875,7 +2097,7 @@ function gameOver(){
   const t=Math.round(tGlobal-prog.startTime);
   document.getElementById('overStats').textContent=
     'Продержался: '+Math.floor(t/60)+' мин '+(t%60)+' сек · Полотен: '+prog.done+'/'+N_CANV+
-    ' · Ошибок: '+madness.errors+
+    ' · Ошибок: '+madness.errors+' · Записок: '+journal.length+'/'+noteTotal()+
     (prog.monKills>=DEATH_LIMIT?' · Оно достало тебя трижды':' · Три поимки подряд');
   document.getElementById('overOv').classList.remove('hidden');
 }
@@ -1885,7 +2107,8 @@ function win(){
   const t=Math.round(tGlobal-prog.startTime);
   document.getElementById('winStats').textContent=
     'Время: '+Math.floor(t/60)+' мин '+(t%60)+' сек · Ошибки: '+madness.errors+
-    ' · Поимки: '+prog.deaths+' · Оно достало тебя: '+prog.monKills;
+    ' · Поимки: '+prog.deaths+' · Оно достало тебя: '+prog.monKills+
+    ' · Записок: '+journal.length+'/'+noteTotal();
   document.getElementById('winOv').classList.remove('hidden');
 }
 
@@ -2295,10 +2518,12 @@ function takeWand(t){
 function openNote(t){
   if(!t)return;
   t.read=true;
-  note={text:t.text,t:0};
+  const fresh=addToJournal(t.text);
+  note={text:t.text,t:0,fresh:fresh};
   state='note';
   releaseMouse();
   sfx.door();
+  if(fresh)say('Записано в дневник. '+journal.length+' из '+noteTotal()+'. [J]',4);
 }
 function closeNote(){
   note=null;state='explore';grabMouse();
@@ -2578,6 +2803,7 @@ function render(){
   if(st>=1&&rnd()<.03){ctx.fillStyle='rgba(57,255,158,.03)';ctx.fillRect(0,0,VW,VH);}
 
   if(state==='note')renderNote();
+  if(state==='journal')renderJournal();
   if(state==='draw'||state==='lightout')renderDraw();
   if(state==='mash')renderMash();
   if(state==='caught')renderScare();
@@ -2627,9 +2853,14 @@ function renderDraw(){
     // под тварью прячется и точка, и её номерок — иначе подсказка всё равно читается
     // номерок — только если правило полотна его оставляет
     if(d.idx>=0&&!d.done&&!tentBlocks(d.idx)&&!draw.mods.has('noNums')){
-      ctx.fillStyle='rgba(255,255,255,.3)';
-      ctx.font='9px "Courier New",monospace';
-      ctx.fillText(String(d.idx+1),x+6,y-6);
+      // Было 9px при непрозрачности 0.3 — в них приходилось всматриваться вплотную,
+      // а полотно и так дрожит и идёт под таймер. Читаемость номерка не должна быть
+      // частью испытания: испытание — успеть, а не разглядеть.
+      ctx.font='bold 14px "Courier New",monospace';
+      ctx.lineWidth=3;ctx.strokeStyle='rgba(0,0,0,.85)';   // тёмная обводка: цифра
+      ctx.strokeText(String(d.idx+1),x+7,y-7);             // читается на любом фоне
+      ctx.fillStyle='rgba(255,255,255,.92)';
+      ctx.fillText(String(d.idx+1),x+7,y-7);
     }
   }
   // Полотно в темноте: видно только пятно вокруг палочки. Рисуем маску ПОСЛЕ точек,
@@ -2809,6 +3040,35 @@ function renderTentacle(b){
 }
 // Записка: белый лист во весь экран. Единственное белое пятно в игре —
 // после часа чернильной темноты оно бьёт по глазам, и это нарочно.
+// Ненайденное показано прочерками: игрок видит НЕ только что собрал, но и сколько
+// упустил. Это единственная причина свернуть в тупик на следующем забеге.
+function renderJournal(){
+  ctx.fillStyle='rgba(2,2,4,.93)';ctx.fillRect(0,0,VW,VH);
+  const total=noteTotal();
+  ctx.textAlign='center';
+  ctx.fillStyle='rgba(236,232,220,.92)';
+  ctx.font='22px "Courier New",monospace';
+  ctx.fillText('ЗАПИСКИ',VW/2,Math.max(58,VH*.12));
+  ctx.fillStyle=journal.length>=total?'#39FF9E':'rgba(122,168,143,.9)';
+  ctx.font='13px "Courier New",monospace';
+  ctx.fillText('НАЙДЕНО '+journal.length+' ИЗ '+total,VW/2,Math.max(80,VH*.12+24));
+  const top=Math.max(112,VH*.12+56), lh=Math.min(34,(VH-top-60)/total);
+  ctx.font=Math.max(13,Math.min(18,lh*.55))+'px "Courier New",monospace';
+  for(let i=0;i<total;i++){
+    const y=top+i*lh;
+    if(i<journal.length){
+      ctx.fillStyle='rgba(236,232,220,.88)';
+      ctx.fillText('«'+journal[i]+'»',VW/2,y);
+    } else {
+      ctx.fillStyle='rgba(120,116,104,.45)';
+      ctx.fillText('— — — — — — —',VW/2,y);
+    }
+  }
+  ctx.fillStyle='rgba(90,86,78,.8)';
+  ctx.font='12px "Courier New",monospace';
+  ctx.fillText('J или Esc — закрыть',VW/2,VH-28);
+  ctx.textAlign='left';
+}
 function renderNote(){
   note.t+=1/60;
   const p=clamp(note.t/.22,0,1), e=p*p*(3-2*p);      // лист разворачивается
@@ -2967,7 +3227,7 @@ function renderScare(){
   if(u>.78){ctx.fillStyle='rgba(0,0,0,'+clamp((u-.78)/.22,0,1)+')';ctx.fillRect(0,0,VW,VH);}
 }
 function renderHUD(){
-  if(state==='start'||state==='win'||state==='caught'||state==='lightout')return;  // скример и засвет занимают экран целиком
+  if(state==='start'||state==='win'||state==='caught'||state==='lightout'||state==='journal')return;
   ctx.font='12px "Courier New",monospace';
   ctx.fillStyle='rgba(122,168,143,.9)';
   if(chase){ctx.fillStyle='#39FF9E';ctx.fillText('БЕГИ К ВЫХОДУ ПО ЛИНИИ',16,24);}
