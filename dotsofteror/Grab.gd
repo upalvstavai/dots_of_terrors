@@ -8,6 +8,14 @@ extends Control
 signal escaped
 signal failed
 
+## Два ТИПА захвата. Один требует долбить пробел, другой — НЕ трогать ничего.
+## Пока требование одно, руки делают его сами: хват читается не как опасность,
+## а как обязанность. Ломается это только сменой требования, потому что тогда
+## сначала надо ПРОЧИТАТЬ, чего от тебя хотят, — а читать в панике трудно.
+## Режим «не шевелись» отсюда УБРАН вместе с полем kind. Он требовал обратного —
+## не нажимать ничего и переждать, — и этим ломал главное чувство захвата:
+## из щупалец надо выдираться. Ожидание — это не борьба.
+
 ## Двенадцать нажатий за 2.8 с проходились не глядя: кто играл в игры, тапает
 ## быстрее. База поднята, а с ростом безумия становится ещё хуже — лабиринт
 ## отбирает не только слух, но и руки.
@@ -25,9 +33,36 @@ var need: int = NEED_BASE
 var time_left: float = 0.0
 var grip: float = 0.55
 var arms: Array = []
+## Значение по умолчанию — на случай, если окно откроют без текста; настоящую
+## строку всегда передаёт мир, и она уже переведена.
 var label: String = "ЖМИ ПРОБЕЛ! ВЫРЫВАЙСЯ!"
 var t: float = 0.0
 var _rng := RandomNumberGenerator.new()
+var vign: ColorRect
+## Рисовать ли петли. Когда держит САМ МОНСТР, вокруг тебя уже сомкнулись его
+## настоящие руки — трёхмерные, с той стороны экрана. Дорисовывать поверх них
+## плоскую спираль незачем: именно она и читалась как «спираль перед экраном».
+## Петли остаются для щупалец из стен, где никакого тела рядом нет.
+var coils: bool = true
+
+
+## С рождения узел НЕ СЧИТАЕТ. Godot включает _process всем, у кого есть такой
+## метод, — и захват тикал с первого кадра игры, задолго до того, как его
+## открывали. У захвата из-за этого таймер уходил в ноль сам собой: полотно объявляло
+## себя проваленным на второй секунде, закрывалось и ЗАБИРАЛО КУРСОР — на
+## стартовом экране пропадала стрелка, и нажать «проснуться» было нечем.
+func _ready() -> void:
+	# Виньетка отдельным узлом с шейдером: _draw не умеет градиент, а нам нужна
+	# именно плавная темнота по краям при прозрачной середине.
+	vign = ColorRect.new()
+	vign.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vign.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var m := ShaderMaterial.new()
+	m.shader = load("res://grab.gdshader")
+	vign.material = m
+	add_child(vign)
+	move_child(vign, 0)
+	set_process(false)
 
 
 func begin(text: String, loud: bool, seed_value: int, stage: int = 0) -> void:
@@ -38,7 +73,7 @@ func begin(text: String, loud: bool, seed_value: int, stage: int = 0) -> void:
 	time_left = TIME
 	grip = 0.55
 	t = 0.0
-	_make_arms(8 if loud else 6)
+	_make_arms(5 if loud else 4)
 	visible = true
 	set_process(true)
 
@@ -64,6 +99,9 @@ func _process(delta: float) -> void:
 		_end(true)
 	elif time_left <= 0.0:
 		_end(false)
+	if vign != null and vign.material != null:
+		vign.material.set_shader_parameter("grip", grip)
+		vign.size = size
 	queue_redraw()
 
 
@@ -96,30 +134,43 @@ func _edge(u: float) -> Vector2:
 
 
 func _draw() -> void:
-	draw_rect(Rect2(Vector2.ZERO, size), Color(0.04, 0.016, 0.016, 0.40 + 0.30 * grip))
+	# Глухой заливки больше нет: её заменила виньетка по краям. Мир видно, и это
+	# главное — пока тебя держат, к тебе идут, и ты должен это видеть.
 	var c := size * 0.5
-	# Материал тот же, что у стен и у монстра: это не отдельная тварь,
-	# это стена дотянулась.
-	for a in arms:
-		var root := _edge(a["u"])
-		var reach: float = clampf((0.30 + 0.85 * grip) * float(a["lead"]), 0.0, 1.18)
-		var dir := c - root
-		var l: float = maxf(dir.length(), 1.0)
-		var ort := Vector2(-dir.y, dir.x) / l
+	# ЗМЕИ, А НЕ РУКИ ИЗ УГЛОВ. Раньше отсюда к центру тянулись щупальца от краёв
+	# экрана — со стороны это читалось как «его язык лижет камеру». Тебя не лижут,
+	# тебя ОБВИВАЮТ: каждая петля идёт по спирали вокруг обзора и с каждой
+	# секундой затягивается ближе к лицу.
+	var base: float = minf(size.x, size.y)
+	for a in (arms if coils else []):
+		var seed_a: float = float(a["seed"])
+		var turn: float = float(a["u"]) * TAU
+		# Кольцо сжимается вместе с хваткой. Это и есть весь показатель:
+		# видно, сколько тебе осталось, не глядя на полоску.
+		var r0: float = base * (0.74 - 0.34 * grip) * float(a["lead"])
 		var pts := PackedVector2Array()
-		var n := 10
-		for i in n + 1:
-			var s: float = float(i) / float(n)
-			var w: float = sin(t * 3.2 + float(a["seed"]) + s * 4.4) * 26.0 * s * (1.0 - s * 0.35) \
-				+ float(a["curl"]) * s * s * 30.0 * grip
-			pts.append(root + dir * s * reach + ort * w)
-		for i in n:
-			var th: float = float(a["w"]) * (1.0 - float(i) / float(n) * 0.72)
-			draw_line(pts[i], pts[i + 1], Color(0.81, 0.79, 0.75, 0.28 + 0.5 * grip), th)
-			draw_line(pts[i], pts[i + 1], Color(0.02, 0.03, 0.04, 0.75), maxf(1.0, th * 0.42))
-		for i in range(2, n, 2):
-			var r: float = maxf(1.0, float(a["w"]) * (1.0 - float(i) / float(n) * 0.72) * 0.30)
-			draw_circle(pts[i], r, Color(0.91, 0.89, 0.85, 0.18 + 0.45 * grip))
+		var n := 30
+		for k in n + 1:
+			var u: float = float(k) / float(n)
+			# Три четверти оборота на петлю, с сужением к хвосту: полный круг
+			# читался бы обручем, а не змеёй.
+			var th: float = turn + u * TAU * 0.78 * float(a["curl"])
+			var wob: float = 1.0 + sin(t * 2.6 + seed_a + u * 6.5) * 0.10
+			var rr: float = r0 * (1.0 - u * 0.26) * wob
+			pts.append(c + Vector2(cos(th) * rr, sin(th) * rr * 0.74))
+		for k in n:
+			var taper: float = (1.0 - float(k) / float(n) * 0.75)
+			# ТОЛЩЕ. На тонких линиях это читалось мотком проволоки, а не телами,
+			# которые тебя обвивают.
+			var th2: float = float(a["w"]) * 2.1 * taper * (0.60 + 0.70 * grip)
+			draw_line(pts[k], pts[k + 1], Color(0.74, 0.73, 0.70, 0.45 + 0.45 * grip), th2)
+			draw_line(pts[k], pts[k + 1], Color(0.02, 0.03, 0.04, 0.78),
+				maxf(1.0, th2 * 0.45))
+		# Присоски по телу петли: без них это шланг, а не живое.
+		for k in range(2, n, 3):
+			var rr2: float = maxf(1.5, float(a["w"]) * 0.55
+				* (1.0 - float(k) / float(n) * 0.75))
+			draw_circle(pts[k], rr2, Color(0.91, 0.89, 0.85, 0.16 + 0.42 * grip))
 
 	var f := ThemeDB.fallback_font
 	var jit := Vector2(_rng.randf() - 0.5, _rng.randf() - 0.5) * (3.0 + 7.0 * grip)

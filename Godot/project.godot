@@ -1,0 +1,38 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="dotsofteror"
+run/main_scene="res://world.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[physics]
+
+3d/physics_engine="Jolt Physics"
+
+[rendering]
+
+; ДРАЙВЕР НЕ НАВЯЗЫВАЕМ. Здесь стояло driver.windows="d3d12" — игра требовала
+; Direct3D 12. А в настройках экспорта стоит export_d3d12=0, то есть его
+; библиотеки (D3D12Core.dll, dxil.dll) в поставку не кладутся: рядом с exe
+; вообще ни одного файла. Проверил обыском по собранному exe — этих строк там
+; нет, зато vulkan-1.dll есть, и слово Vulkan встречается 31 раз против трёх
+; упоминаний D3D12. То есть игра просила рисовальщика, которого мы не даём.
+; Без этой строки Godot берёт свой обычный Vulkan — самый обкатанный путь.
+textures/vram_compression/import_etc2_astc=true

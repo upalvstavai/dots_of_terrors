@@ -1,4 +1,6 @@
 extends RefCounted
+
+const Settings := preload("res://Settings.gd")
 ## Записки и дневник. Перенос из HTML (NOTES / journal / openNote).
 ##
 ## Раньше на всех столах лежала одна фраза — второй стол уже ничего не добавлял.
@@ -24,6 +26,28 @@ const PHRASES := [
 const KEY := ["не доверяй ему", "никому не доверяй", "ему нужен он"]
 
 const START_NOTE := "Я не могу себя долго контролировать"
+
+## ПЕРЕВОД ПО МЕСТУ ПОКАЗА. Русская строка остаётся КЛЮЧОМ: по ней сверяется
+## KEY, по ней же лежит дневник в сохранении. Переведи сами константы — и у
+## всех, кто уже играл, дневник осыплется в мусор, а «ключевые» записки
+## перестанут узнаваться.
+const EN := {
+	"это существо не из нашего мира": "this thing is not from our world",
+	"не доверяй ему": "do not trust it",
+	"он бог": "it is a god",
+	"мы его разозлили и он нам мстит": "we angered it and it is paying us back",
+	"меня обманули": "i was lied to",
+	"ему нужен он": "it wants him",
+	"никому не доверяй": "trust no one",
+	"Я не могу себя долго контролировать": "i cannot hold myself together much longer",
+}
+
+
+## Как эту записку показать игроку на его языке.
+static func say(text: String) -> String:
+	if Settings.lang == "en" and EN.has(text):
+		return str(EN[text])
+	return text
 const SAVE_PATH := "user://journal.json"
 
 

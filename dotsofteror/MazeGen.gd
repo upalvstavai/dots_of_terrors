@@ -46,6 +46,18 @@ var _step: int
 
 ## Собрать лабиринт. Один и тот же seed всегда даёт одну и ту же карту —
 ## это нужно, чтобы воспроизводить баги и делиться сидом.
+## ПЕРЕМЕШИВАЕМ СВОИМ ГЕНЕРАТОРОМ. Array.shuffle() берёт ОБЩИЙ движковый
+## генератор, а не наш: два вызова здесь — и «один и тот же seed всегда даёт одну
+## и ту же карту» переставало быть правдой. Коридоры совпадали, а лишние связи,
+## тупики, а за ними залы, полотна и проломы — разъезжались от запуска к запуску.
+func _shuffle(a: Array) -> void:
+	for i in range(a.size() - 1, 0, -1):
+		var j: int = _rng.randi() % (i + 1)
+		var t = a[i]
+		a[i] = a[j]
+		a[j] = t
+
+
 func generate(seed_value: int) -> void:
 	_rng.seed = seed_value
 	_step = corridor + wall
@@ -131,7 +143,7 @@ func _add_loops() -> void:
 				var mid_c = wall + j * _step + dir.y * corridor
 				if grid[mid_r][mid_c] == 1:
 					cand.append([Vector2i(i, j), dir])
-	cand.shuffle()
+	_shuffle(cand)
 	for k in int(cand.size() * loops):
 		_carve_link(cand[k][0], cand[k][1])
 
@@ -142,7 +154,7 @@ func _trim_dead_ends() -> void:
 		var ends := _dead_ends()
 		if ends.size() <= dead_ends_want:
 			return
-		ends.shuffle()
+		_shuffle(ends)
 		var kill: int = maxi(1, (ends.size() - dead_ends_want) / 2)
 		for k in kill:
 			var p: Vector2i = ends[k]

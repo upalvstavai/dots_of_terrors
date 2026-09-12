@@ -1,0 +1,10 @@
+Модели. Все — CC0 (Public Domain), можно брать без указания автора,
+но авторы всё равно названы в титрах игры.
+
+polyhaven.com — лицензия CC0
+  old_bed_frame              старая железная кровать (рама детской)
+  painted_wooden_nightstand  тумбочка у изголовья
+  throw_pillows_01           подушка
+
+quaternius.com — лицензия CC0
+  human.glb                  болванка человека
