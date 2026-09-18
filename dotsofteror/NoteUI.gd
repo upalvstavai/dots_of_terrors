@@ -2,6 +2,7 @@ extends Control
 ## Лист записки и дневник. Одно и то же окно в двух режимах.
 
 const Notes := preload("res://Notes.gd")
+const UI := preload("res://UI.gd")
 const Lang := preload("res://Lang.gd")
 
 signal closed
@@ -71,7 +72,7 @@ func _draw_note() -> void:
 	_draw_sheet(r, e)
 	if t < 1.0:
 		return
-	var f := ThemeDB.fallback_font
+	var f := UI.text(400)
 	var fs: int = int(clampf(w / 17.0, 15.0, 24.0))
 	draw_string(f, Vector2(r.position.x + w * 0.11, r.position.y + h * 0.45), text,
 		HORIZONTAL_ALIGNMENT_CENTER, w * 0.78, fs, Color(0.106, 0.102, 0.094))
@@ -112,7 +113,7 @@ func _draw_journal() -> void:
 	# Вся вёрстка считается ОТ РАЗВОРОТА, а не от экрана. Иначе заголовок и
 	# подсказка висят за краем бумаги, светлые по чёрному, — и разворот
 	# перестаёт быть вещью, становится подложкой под интерфейс.
-	var f := ThemeDB.fallback_font
+	var f := UI.text(400)
 	var total := Notes.total()
 	var x0: float = cx - w * 0.5
 	draw_string(f, Vector2(x0, y0 + 42.0), Lang.t("notes"),

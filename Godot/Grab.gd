@@ -27,10 +27,16 @@ signal failed
 const NEED_BASE := 17
 const NEED_PER_STAGE := 2
 const TIME := 4.0
+## ПОТОЛОК СТАВКИ. В третьей фазе окно короче (мир передаёт rush), а безумие к
+## тому времени обычно уже высокое — и эти два множителя, встретившись, дают
+## ставку, которую не берёт никто. Поэтому число нажатий здесь урезается под
+## окно: быстрее — да, невозможно — нет.
+const HUMAN_MAX := 6.2
 
 var count: int = 0
 var need: int = NEED_BASE
 var time_left: float = 0.0
+var window: float = TIME       ## сколько было дано с самого начала: окно меняется
 var grip: float = 0.55
 var arms: Array = []
 ## Значение по умолчанию — на случай, если окно откроют без текста; настоящую
@@ -65,12 +71,15 @@ func _ready() -> void:
 	set_process(false)
 
 
-func begin(text: String, loud: bool, seed_value: int, stage: int = 0) -> void:
+func begin(text: String, loud: bool, seed_value: int, stage: int = 0,
+		rush: float = 1.0) -> void:
 	_rng.seed = seed_value
 	need = NEED_BASE + stage * NEED_PER_STAGE
 	label = text
 	count = 0
-	time_left = TIME
+	window = TIME * clampf(rush, 0.5, 1.0)
+	need = mini(need, int(HUMAN_MAX * window))
+	time_left = window
 	grip = 0.55
 	t = 0.0
 	_make_arms(5 if loud else 4)
@@ -94,7 +103,7 @@ func _process(delta: float) -> void:
 	# за первые же нажатия — борьба кончалась раньше, чем игрок успевал её увидеть.
 	# Теперь держат почти до конца и срываются на последних ударах.
 	var relief: float = 0.95 * pow(clampf(float(count) / float(need), 0.0, 1.0), 1.7)
-	grip = clampf(0.55 + 0.80 * (1.0 - time_left / TIME) - relief, 0.0, 1.0)
+	grip = clampf(0.55 + 0.80 * (1.0 - time_left / window) - relief, 0.0, 1.0)
 	if count >= need:
 		_end(true)
 	elif time_left <= 0.0:

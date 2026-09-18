@@ -11,6 +11,7 @@ extends Control
 ## это и прочиталось при первой же проверке.
 
 const Lang := preload("res://Lang.gd")
+const UI := preload("res://UI.gd")
 
 signal restarted
 
@@ -59,7 +60,7 @@ func _process(delta: float) -> void:
 
 
 func _draw() -> void:
-	var f := ThemeDB.fallback_font
+	var f := UI.text(400)
 	# Наливается за полторы секунды, а не появляется щелчком: удар уже случился,
 	# и экран должен догнать его, а не перебить.
 	var a: float = clampf(_t / 1.5, 0.0, 1.0)

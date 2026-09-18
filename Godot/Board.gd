@@ -48,8 +48,18 @@ var paper: Texture2D = load("res://tex/paper_color.jpg")
 var wood: Texture2D = load("res://tex/wood_color.jpg")
 var tent_t: float = 0.0
 var tent_life: float = 0.0
-var tent_idx: int = -1
-var tent_seed: float = 0.0
+## ЩУПАЛЬЦА ЗАКРЫВАЮТ НЕСКОЛЬКО ТОЧЕК, А НЕ ОДНУ.
+##
+## Было одно, и оно садилось ровно на ту точку, которую надо нажать следующей.
+## Задумано это было наказанием — «труднее там, где промахнулся», — а на деле
+## работало ПОДСКАЗКОЙ: человек, потерявший очередь, ждал пару секунд и видел
+## ответ. Первый же игрок со стороны это и сказал: «штука, которая закрывает
+## точки, вместо помехи подсказывает».
+##
+## Лечится не убиранием, а числом: закрываем нужную точку И ещё две случайные
+## из нетронутых. Правильная по-прежнему закрыта — наказание осталось, — но
+## какая из трёх правильная, по щупальцам не понять.
+var tents: Array = []            ## [{idx, seed}] — что сейчас закрыто
 
 
 ## С рождения узел НЕ СЧИТАЕТ. Godot включает _process всем, у кого есть такой
@@ -83,7 +93,7 @@ func open(shape_data: Dictionary, canvas_index: int, fear: float, stage: int, se
 	# происходить под рукой, которая закрывает нужную точку.
 	tent_on = not final and canvas_index > 0 and (canvas_index % TENT_EVERY == 0)
 	tent_t = _rng.randf_range(TENT_FIRST[0], TENT_FIRST[1])
-	tent_idx = -1
+	tents.clear()
 	tent_life = 0.0
 	_build_dots()
 	visible = true
@@ -166,7 +176,12 @@ func _process(delta: float) -> void:
 ## Точка под щупальцем не нажимается, но это и НЕ ошибка: наказывать за то,
 ## что рисунок сам спрятал нужную точку, было бы нечестно.
 func blocked(idx: int) -> bool:
-	return tent_idx == idx and tent_life > 0.0
+	if tent_life <= 0.0:
+		return false
+	for tt in tents:
+		if int(tt["idx"]) == idx:
+			return true
+	return false
 
 
 ## Щупальце ВНЕ очереди — наказание за ошибку. Раньше промах стоил единицы в
@@ -176,9 +191,28 @@ func blocked(idx: int) -> bool:
 func punish() -> void:
 	if next_idx >= n:
 		return
-	tent_idx = next_idx
+	_grow_tents(3)
 	tent_life = 1.5 + _rng.randf() * 1.1
-	tent_seed = _rng.randf() * 99.0
+
+
+## Выбрать, что закрыть: обязательно следующую точку и ещё несколько из тех,
+## до которых игрок ещё не дошёл. Уже соединённые не берём — закрывать
+## пройденное бессмысленно, и по одному этому признаку ответ бы вычислялся.
+func _grow_tents(want: int) -> void:
+	tents.clear()
+	if next_idx >= n:
+		return
+	tents.append({"idx": next_idx, "seed": _rng.randf() * 99.0})
+	var free: Array = []
+	for d in dots:
+		var i: int = int(d["idx"])
+		if i > next_idx:
+			free.append(i)
+	free.shuffle()
+	for i2 in free:
+		if tents.size() >= want:
+			break
+		tents.append({"idx": i2, "seed": _rng.randf() * 99.0})
 
 
 func _update_tent(delta: float) -> void:
@@ -187,16 +221,15 @@ func _update_tent(delta: float) -> void:
 	if tent_life > 0.0:
 		tent_life -= delta
 		if tent_life <= 0.0:
-			tent_idx = -1
+			tents.clear()
 			tent_t = _rng.randf_range(TENT_REPEAT[0], TENT_REPEAT[1])
 		return
 	if not tent_on:
 		return
 	tent_t -= delta
 	if tent_t <= 0.0 and next_idx < n:
-		tent_idx = next_idx
+		_grow_tents(3)
 		tent_life = _rng.randf_range(TENT_COVER[0], TENT_COVER[1])
-		tent_seed = _rng.randf() * 99.0
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -350,12 +383,14 @@ func _draw() -> void:
 
 	# Полотно в темноте: видно только пятно вокруг курсора. Рисуем ПОСЛЕ точек,
 	# но ДО ленты и таймера — иначе игроку нечем целиться и не видно, сколько осталось.
-	if tent_idx >= 0 and tent_life > 0.0 and dissolve <= 0.0:
-		for d in dots:
-			if d["idx"] == tent_idx:
+	if not tents.is_empty() and tent_life > 0.0 and dissolve <= 0.0:
+		for tt in tents:
+			for d in dots:
+				if int(d["idx"]) != int(tt["idx"]):
+					continue
 				var tp := _dot_pos(d)
 				for k in 4:
-					var a0: float = tent_seed + float(k) * 1.6 + t_global * 2.0
+					var a0: float = float(tt["seed"]) + float(k) * 1.6 + t_global * 2.0
 					var arm := PackedVector2Array()
 					for i in 7:
 						var s2: float = float(i) / 6.0
@@ -422,6 +457,17 @@ func _draw_hud(b: Rect2) -> void:
 	if tremor > 1.0:
 		draw_string(f, Vector2(b.position.x, b.position.y - 42), Lang.t("fear") % tremor,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.88, 0.31, 0.24))
+	# БРОСИТЬ МОЖНО — И ОБ ЭТОМ НАДО СКАЗАТЬ. Клавиша была с самого начала, а
+	# подсказки не было ни одной: первый же человек со стороны решил, что из
+	# полотна не выйти, и что монстр бьёт по беззащитному. Механика оказалась
+	# исправной, а игра — молчаливой, и это одно и то же для того, кто играет.
+	#
+	# Внизу, под холстом, и КРАСНЫМ, когда он подходит: в этот момент подсказка
+	# из справки становится решением.
+	var drop_col: Color = Color(0.88, 0.31, 0.24) if (show_near and near > 0.35) \
+		else Color(0.62, 0.60, 0.55, 0.75)
+	draw_string(f, Vector2(b.position.x, b.position.y + b.size.y + 22),
+		Lang.t("b_drop"), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, drop_col)
 	if not mods.is_empty():
 		var names := []
 		for m in mods:

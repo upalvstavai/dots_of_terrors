@@ -50,6 +50,7 @@ static func load_all() -> void:
 		music = clampf(float(cfg.get_value("audio", "music", 1.0)), 0.0, 1.0)
 		sounds = clampf(float(cfg.get_value("audio", "sounds", 1.0)), 0.0, 1.0)
 		gamma = clampf(float(cfg.get_value("ui", "gamma", 1.0)), 0.6, 1.6)
+		fullscreen = bool(cfg.get_value("ui", "fullscreen", false))
 		binds = cfg.get_value("ui", "binds", {})
 		runs = maxi(0, int(cfg.get_value("память", "runs", 0)))
 		deaths = maxi(0, int(cfg.get_value("память", "deaths", 0)))
@@ -67,6 +68,7 @@ static func save_all() -> void:
 	cfg.set_value("ui", "quality", quality)
 	cfg.set_value("ui", "mouse", mouse)
 	cfg.set_value("ui", "gamma", gamma)
+	cfg.set_value("ui", "fullscreen", fullscreen)
 	cfg.set_value("ui", "binds", binds)
 	cfg.set_value("память", "runs", runs)
 	cfg.set_value("память", "deaths", deaths)
@@ -165,6 +167,21 @@ static func creator_tools() -> bool:
 	return OS.is_debug_build() or OS.get_cmdline_user_args().has("создатель")
 
 
+## ВЕРТИКАЛЬНЫЙ СРЕЗ — ОТДЕЛЬНАЯ СБОРКА, а не режим внутри игры.
+##
+## Срез отвечает на вопрос «как выглядит игра, когда она готова», и потому в нём
+## не может быть ничего «пока грубовато». Отсюда единственный способ его сделать:
+## не улучшать качество, а РЕЗАТЬ минуты, — меньше минут, значит каждую можно
+## довести. Полная игра идёт сорок минут без нити; срез — пятнадцать.
+##
+## И главное, ради чего он вообще: в полной игре третья фаза наступает с шестого
+## полотна из семи или с пятнадцатой минуты. То есть в пятнадцатиминутном показе
+## её НЕ УВИДЯТ — человек уйдёт, не встретив того, чем игра хороша. В срезе вся
+## дуга твари укладывается внутрь показа.
+static func slice() -> bool:
+	return OS.has_feature("srez") or OS.get_cmdline_user_args().has("срез")
+
+
 # ─────────────────────── переназначение клавиш ───────────────────────
 ## СВОИ КЛАВИШИ. WASD лежит не у всех: на AZERTY это ZQSD, у кого-то стрелки,
 ## у кого-то левая рука занята. Физические коды спасают раскладку, но не привычку.
@@ -172,8 +189,14 @@ static func creator_tools() -> bool:
 ## Переназначается ТОЛЬКО клавиатура. Кнопки геймпада оставлены жёсткими: там
 ## раскладка стандартная, её не переучивают, а возможность снять нижнюю кнопку
 ## с рывка — это возможность запереть себя в захвате без выхода.
+## НИТИ В СПИСКЕ НЕТ.
+##
+## Клавиша работает — G по-прежнему тянет ленту к цели, — но игра о ней больше
+## нигде не рассказывает: ни на первом экране, ни в списке управления. Это
+## подсказка для того, кто уже потерялся и сам её нашёл, а не предложение
+## включить лёгкий режим до того, как стало трудно.
 const BIND_ACTIONS := ["forward", "back", "left", "right", "run", "sprint",
-	"quick_turn", "flash", "read", "journal", "thread"]
+	"quick_turn", "flash", "read", "journal"]
 
 static var binds: Dictionary = {}
 ## Снимок заводской раскладки. Нужен для «вернуть заводские»: сбросить список
@@ -305,10 +328,39 @@ static func note_death() -> void:
 ## ПОЛНЫЙ ЭКРАН. Годо сам ничего на это не вешает: пока не заведёшь клавишу,
 ## окно так и остаётся окном, что бы игрок ни жал. F11 и Alt+Enter — то, что
 ## пробуют первым.
-static func toggle_fullscreen() -> void:
+##
+## ИСКЛЮЧИТЕЛЬНЫЙ, А НЕ ОБЫЧНЫЙ. На macOS обычный полный экран оставляет Dock и
+## строку меню, которые выезжают, стоит мыши дойти до края, — играющий
+## (18.09): «чтобы на полный экран становилась реально на полный экран».
+## Исключительный режим уводит игру на свой рабочий стол и прячет их.
+## И это настройка: помнится между запусками и ставится из меню.
+static var fullscreen: bool = false
+
+
+static func is_fullscreen() -> bool:
 	var m: int = DisplayServer.window_get_mode()
-	if m == DisplayServer.WINDOW_MODE_FULLSCREEN \
-			or m == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN:
+	return m == DisplayServer.WINDOW_MODE_FULLSCREEN \
+		or m == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
+
+
+static func apply_window() -> void:
+	# Стенду окно не трогаем: прогоны сами по себе, и полный экран поверх
+	# всего посреди работы — последнее, что нужно.
+	if DisplayServer.get_name() == "headless" \
+			or OS.get_cmdline_user_args().has("бот"):
+		return
+	if fullscreen:
+		if DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN)
+	elif is_fullscreen():
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
-	else:
-		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+
+static func set_fullscreen(on: bool) -> void:
+	fullscreen = on
+	apply_window()
+	save_all()
+
+
+static func toggle_fullscreen() -> void:
+	set_fullscreen(not is_fullscreen())

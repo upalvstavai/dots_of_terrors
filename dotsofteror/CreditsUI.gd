@@ -9,6 +9,7 @@ extends Control
 ## титры разъедутся с тем, что лежит в папке.
 
 const Lang := preload("res://Lang.gd")
+const UI := preload("res://UI.gd")
 
 signal closed
 
@@ -71,7 +72,7 @@ func _process(_delta: float) -> void:
 
 
 func _draw() -> void:
-	var f := ThemeDB.fallback_font
+	var f := UI.text(400)
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.012, 0.012, 0.02))
 	var y: float = maxf(56.0, size.y * 0.10)
 	draw_string(f, Vector2(0, y), Lang.t("credits"), HORIZONTAL_ALIGNMENT_CENTER, size.x, 28,

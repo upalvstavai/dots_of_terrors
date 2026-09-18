@@ -12,6 +12,7 @@ extends Node3D
 ## Грузим генератор ПО ПУТИ, а не через class_name. Имя класса появляется только
 ## после того, как Godot проиндексировал файл; пока этого не случилось, скрипт
 ## не парсится, а сцена с непарсящимся скриптом выдаёт «ошибка при загрузке файла».
+const PlayerScript := preload("res://Player.gd")
 const MazeGenScript := preload("res://MazeGen.gd")
 const BoardScript := preload("res://Board.gd")
 const Shapes := preload("res://Shapes.gd")
@@ -64,13 +65,21 @@ const TELL_LOOK := 0.35        ## косинус: ±70°. Спасает ВЗГ�
 ##   G — нить к текущей цели (полотно, а после шести — выход)
 ##   M — линия к монстру (появится, когда монстр будет перенесён)
 
-## 2.8, а не 2.4. Стол в полтора метра оставлял в клетке 12 см запаса — в такой
-## коридор он влезал только чудом. Больше поднимать нельзя: площадь пола и
-## потолка растёт квадратом, а с ней и число треугольников.
-@export var cell_size: float = 2.8
-## Потолок должен быть НАД головой, а не на ней. При 2.9 он приходился в метре
-## с небольшим от глаз, и коридор читался как щель без верха.
-@export var wall_height: float = 4.3
+## РАЗМЕР ЛАБИРИНТА. Было 2.8 × 4.3 — и тварь в него не помещалась. Щупальца
+## изо рта длиной 4.4 м перекрывали проход целиком: на кадре видно было только
+## их, а не фигуру, и читалось это как плоская картинка, приклеенная поверх
+## коридора. Плюс монстр торчал из-за поворотов задолго до встречи — просто
+## потому, что он шире прохода.
+##
+## Лечить это, УМЕНЬШАЯ тварь, нельзя: её размер и есть угроза. Значит растёт
+## место. 4.0 × 6.0 — проход шире её плеч, потолок выше её макушки (3.94 м), и
+## она наконец помещается туда, где живёт.
+##
+## Цена известна: площадь пола и потолка растёт квадратом, а сетка стен —
+## линейно по каждой оси, то есть примерно вдвое больше вершин. Поэтому кадр
+## после этой правки мерян отдельно, а не на глаз.
+@export var cell_size: float = 4.0
+@export var wall_height: float = 6.0
 ## Сколько дыр в потолке: сквозь них бьёт солнце и льётся та же масса.
 @export var holes_want: int = 3
 # СРЕЗ ИДЁТ НА ОДНОЙ КАРТЕ. Генерация никуда не делась — она включается одним
@@ -131,7 +140,23 @@ var canvas_arm: bool = true     ## пока не отошёл от полотн�
 var finale: bool = false        ## идёт финальная дверь
 var won: bool = false
 var monster
-var phase: int = 1              ## 1 — он в камне, 2 — глухота, 3 — он снаружи
+var phase: int = 0              ## 0 пролог, 1 лицо, 2 коридор, 3 он знает всё
+var ph_said: Dictionary = {}    ## какие фазы уже объявлены, чтобы не дважды
+var ph1_clock: float = 0.0      ## на какой секунде прошла катсцена с лицом
+var ph2_clock: float = 0.0      ## на какой секунде сработала засада за углом
+var ph2_ready: float = -1.0     ## когда впервые сошлись условия второй фазы
+var face_stage: int = 0         ## катсцена первой фазы: 0 нет, 1 ведёт голову, 2 камень дышит, 3 лицо
+var face_t: float = 0.0         ## сколько осталось текущей стадии
+var face_at: Vector3 = Vector3.ZERO   ## точка на стене, в которую всматриваются
+var face_cell: Vector2i = Vector2i(-1, -1)
+var amb_on: bool = false        ## засада за углом расставлена и ждёт
+var amb_cell: Vector2i = Vector2i(-1, -1)   ## сам поворот
+var amb_hide: Vector2i = Vector2i(-1, -1)   ## клетка за поворотом, где он стоит
+var amb_t: float = 0.0          ## сколько ждём, прежде чем переставить засаду
+var amb_next: float = 0.0       ## когда он в следующий раз спрячется в углу
+var amb_pass: bool = false      ## засада «мимо стены»: ждёт, пока ПРОЙДУТ
+var amb_seen: bool = false      ## в этой засаде игрок уже подходил вплотную
+var fake_wall: Node3D = null    ## плита, которой он притворяется; она же его и прячет
 var anger: int = 0              ## растёт после потолка ошибок, разгоняет монстра
 var captures: int = 0
 var sfx
@@ -175,6 +200,13 @@ var credits_ui
 var death_ui
 var pause_ui
 var started: bool = false   ## нажата ли клавиша на стартовом экране
+## ЛАБОРАТОРИЯ. Мир тот же, но сам он не нападает: монстр стоит, фазы не идут,
+## щупальца не бьют, гнёзда не оживают. Нужно это затем, что разглядывать
+## декорации в игре нельзя — мешает ровно то, из-за чего игру и делают, — а
+## показывать вместо мира СВОЮ КОПИЮ лампы я не хочу: копия однажды уже
+## обманула (смотровая с коридором 4.6 м при игровых 2.8). Здесь честнее:
+## настоящий мир, у которого выключена только собственная воля.
+var lab: bool = false
 ## Окно потеряло фокус — игра встаёт. Выключается только для стенда и съёмки.
 var _autopause: bool = true
 var nests: Array = []           ## {pos, used}
@@ -230,6 +262,9 @@ var slam_left: float = 0.0      ## сколько всего до неминуе
 var slam_cool: float = 0.0
 var traps_left: int = TRAP_TIMES  ## сколько засад из стены осталось на проход
 var forms_left: int = FORM_TIMES  ## сколько раз он ещё выйдет фигурой
+var last_form_room: bool = false  ## последнее превращение случилось в зале
+var was_chasing: bool = false     ## он гнался в прошлом кадре
+var chase_sting_t: float = 0.0    ## откат удара «началась погоня»
 var form_cool: float = 0.0
 var form_want: float = -1.0    ## сколько ждём удобного момента; -1 — не взведено
 var slam_to: Vector3 = Vector3.ZERO
@@ -249,9 +284,14 @@ const TRAP_TIMES := 2
 ## руками с потолка и языком из пасти, — игрок за проход не видел НИ РАЗУ.
 ## Теперь он ВЫХОДИТ фигурой: дважды за игру, на полминуты, и только когда его
 ## видно, иначе превращение случится за спиной в соседнем коридоре.
-const FORM_TIMES := 2
+## ЧЕТЫРЕ, А НЕ ДВА. Два раза по 28 секунд — это меньше минуты фигуры за всю
+## игру, да ещё и после второй фазы, которая до сих пор могла не наступить
+## вовсе. Он прошёл игру и не увидел её ни разу. Четыре выхода с откатом в
+## восемьдесят секунд — это всё ещё событие, а не фон, но событие, которое
+## точно случится.
+const FORM_TIMES := 4
 const FORM_LEN := 28.0
-const FORM_COOL := 120.0
+const FORM_COOL := 80.0
 ## Сколько ждать удобного момента, прежде чем сделать его самим.
 const FORM_WAIT := 45.0
 ## АТАКИ ФИГУРЫ. Первая: он замирает, тянет руки вверх — и тебя ловят руки
@@ -442,6 +482,21 @@ func _build_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color(0.01, 0.01, 0.015)
+	# ТОНАЛЬНАЯ КРИВАЯ ОСТАЁТСЯ ЛИНЕЙНОЙ — И ЭТО ПРОВЕРЕНО, А НЕ ОСТАВЛЕНО
+	# ПО НЕДОСМОТРУ.
+	#
+	# Я был уверен, что близкие предметы выгорают в белое из-за неё, и поставил
+	# ACES. Замер по области пюпитра сказал обратное: средняя там 76 из 255, а
+	# пикселей ярче 200 — НОЛЬ. Ничего не выгорало; светлым он казался рядом с
+	# коридором, у которого средняя 27. Это разница контраста, а не пересвет.
+	#
+	# ACES при этом стоил дорого: средняя по кадру падала с 27.2 до 11.6, то
+	# есть мир темнел вдвое. Подъёмом выдержки до 2.9 яркость возвращалась
+	# наполовину (22.8), но обрезание в чистый белый росло с 0.28% до 1.68% —
+	# вшестеро. Выигрыша нет ни в одном варианте.
+	#
+	# Если когда-нибудь захочется киношного контраста — это будет решение про
+	# ВНЕШНОСТЬ, а не починка: чинить тут нечего.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.55, 0.6, 0.62)
 	# ambient, а не 1.0. Разошедшиеся числа: мир строился с яркостью 1.0, а
@@ -1074,7 +1129,7 @@ func _place_player() -> void:
 	if p.has_signal("stepped"):
 		p.stepped.connect(_on_step)
 		p.sprint_ended.connect(_on_sprint_ended)
-	p.global_position = cell_to_world(start_cell, 0.85)
+	p.global_position = cell_to_world(start_cell, PlayerScript.STAND_Y)
 	if "mouse_sens" in p:
 		# Базовое значение умножаем на настройку игрока, а не заменяем: так
 		# «единица» всегда означает то, под что игра настраивалась.
@@ -1111,6 +1166,19 @@ func _place_player() -> void:
 ## Всё висит на голове, поэтому двигается вместе со взглядом. Держим близко и
 ## мелко: отдельной камеры под оружие тут нет, и длинная палка втыкалась бы в
 ## стены.
+## Пометить всё, что в руке, своим слоем: рекурсивно, потому что нити висят
+## на палочке, а та на корне вида.
+func _mark_view(n: Node) -> void:
+	if n is VisualInstance3D:
+		(n as VisualInstance3D).layers = 1 << (VIEW_LAYER - 1)
+	for c in n.get_children():
+		_mark_view(c)
+
+
+## Слой видимости для того, что в руке. Пятый занят монстром (Monster.MON_LAYER),
+## берём четвёртый.
+const VIEW_LAYER := 4
+
 func _build_viewmodel(head: Node3D) -> void:
 	var view := Node3D.new()
 	view.name = "View"
@@ -1147,9 +1215,22 @@ func _build_viewmodel(head: Node3D) -> void:
 	wm.top_radius = 0.018
 	wm.bottom_radius = 0.026
 	wm.height = 0.46
-	wm.radial_segments = 8
+	# ВОСЕМЬ СЕГМЕНТОВ — ЭТО ВОСЬМИГРАННИК. На кадре вблизи палочка читалась
+	# гранёной палкой: силуэт ломался ступеньками, и никакая текстура этого не
+	# прячет. Шестнадцать стоят ничего: это одна маленькая сетка на весь экран,
+	# а не лабиринт.
+	wm.radial_segments = 16
 	wand.mesh = wm
-	wand.material_override = _tex_material("wood", 3.0, Color(0.30, 0.25, 0.21))
+	var wmat2 := _tex_material("wood", 3.0, Color(0.30, 0.25, 0.21))
+	# КОРА ВДОЛЬ ДРЕВКА, а не квадратами. Один множитель на обе оси растягивал
+	# рисунок по окружности и сжимал по длине — получалась мыльная полоса.
+	# Вдоль ставим втрое чаще: древесина и есть продольные волокна.
+	wmat2.uv1_scale = Vector3(2.0, 7.0, 1.0)
+	# И БЕЗ ЛАКА. У дерева блик рассеянный; резкие белые штрихи на нижней
+	# половине читались как обугленная головня, а не как палка.
+	wmat2.roughness = 1.0
+	wmat2.metallic_specular = 0.12
+	wand.material_override = wmat2
 	wand.position = Vector3(0.235, -0.13, -0.5)
 	wand.rotation_degrees = Vector3(-72.0, 0.0, -6.0)
 	view.add_child(wand)
@@ -1203,7 +1284,10 @@ func _build_viewmodel(head: Node3D) -> void:
 	var wmat := ShaderMaterial.new()
 	wmat.shader = load("res://tentacle.gdshader")
 	wmat.set_shader_parameter("tint", Color(0.030, 0.035, 0.033))
-	wmat.set_shader_parameter("rim_tint", Color(0.16, 0.44, 0.27))
+	# КРОМКА ТУСКЛЕЕ. Была 0.16/0.44/0.27 — на чёрном древке семь таких нитей
+	# читались пластиковыми травинками. Живая нить на мокром дереве светится
+	# краем еле-еле.
+	wmat.set_shader_parameter("rim_tint", Color(0.085, 0.22, 0.145))
 	wmat.set_shader_parameter("wave", 0.018)
 	wmat.set_shader_parameter("speed", 2.6)
 	wmat.set_shader_parameter("pinch", 0.55)
@@ -1224,6 +1308,30 @@ func _build_viewmodel(head: Node3D) -> void:
 		# Своя фаза по кругу и своя скорость: одинаковые ползли бы строем.
 		wand_worms.append({"n": w, "a": TAU * float(i) / 7.0,
 			"t": float(i) / 7.0, "v": 0.20 + 0.10 * float(i % 3), "len": ln2})
+	# РУКУ НЕ ОСВЕЩАЕТ ФОНАРЬ. Дело было не в цвете — его уже темнили однажды, —
+	# а в расстоянии: фонарь висит на голове и светит на 25 единиц, а кисть от
+	# него в десяти сантиметрах. При таком свете любая поверхность выгорает в
+	# белое, и на кадре рука с пальцем читались двумя плоскими бежевыми
+	# карточками, приклеенными к углу экрана.
+	#
+	# Разводим по слоям видимости: всё, что в руке, уходит на свой слой, фонарь
+	# перестаёт его видеть, и светит на него отдельная слабая лампа, висящая
+	# там же. Она не даёт тени на мир и не участвует в освещении лабиринта.
+	_mark_view(view)
+	if wand_lamp != null:
+		wand_lamp.light_cull_mask = 0xFFFFF & ~(1 << (VIEW_LAYER - 1))
+	var vlamp := OmniLight3D.new()
+	# СЛАБО И ИЗДАЛЕКА. Первая попытка: 1.35 единицы в десяти сантиметрах от
+	# кисти — и она снова выгорела в бежевую плиту, только теперь от моей же
+	# лампы. Обратный квадрат не прощает близости: те же единицы в полуметре
+	# дают в десять с лишним раз меньше.
+	vlamp.light_energy = 0.55
+	vlamp.omni_range = 1.4
+	vlamp.light_color = Color(0.80, 0.84, 0.90)
+	vlamp.light_cull_mask = 1 << (VIEW_LAYER - 1)
+	vlamp.shadow_enabled = false
+	vlamp.position = Vector3(0.05, 0.28, 0.18)
+	view.add_child(vlamp)
 	view.visible = has_wand
 
 
@@ -1424,9 +1532,13 @@ func _easel(cell: Vector2i) -> MeshInstance3D:
 	_part(root, Vector3(0.86, 0.07, 0.07), Vector3(0.0, 0.64, 0.08), wood)
 	var canvas := MeshInstance3D.new()
 	var cm := BoxMesh.new()
-	cm.size = Vector3(0.78, 0.62, 0.04)
+	# ТОНЬШЕ. Четыре сантиметра — это доска, а не холст; в кадре вблизи ребро
+	# читалось торцом фанеры.
+	cm.size = Vector3(0.78, 0.62, 0.022)
 	canvas.mesh = cm
-	var mat := _tex_material("paper", 1.0, Color(0.42, 0.90, 0.62), 0.9)
+	# И ТКАНЬ ЧАЩЕ. Один отрезок текстуры на 78 сантиметров растягивал волокно
+	# в мыло: полотно выглядело крашеной плоскостью, а не натянутой тряпкой.
+	var mat := _tex_material("paper", 3.0, Color(0.42, 0.90, 0.62), 0.9)
 	mat.emission_enabled = true
 	mat.emission = Color(0.22, 1.0, 0.62)
 	mat.emission_texture = mat.albedo_texture
@@ -1435,6 +1547,19 @@ func _easel(cell: Vector2i) -> MeshInstance3D:
 	canvas.position = Vector3(0.0, 1.02, 0.06)
 	canvas.rotation_degrees = Vector3(-8, 0, 0)
 	root.add_child(canvas)
+	# ПОДРАМНИК. Четыре планки по краям — то, на что тряпку и натягивают. Без
+	# них холст был плоской карточкой, висящей в воздухе: на кадре вблизи это
+	# первое, что бросается в глаза, и видно это у каждого из семи полотен.
+	#
+	# Вешаем НА САМ ХОЛСТ: его материал перекрашивает _refresh_marks, когда
+	# полотно сдано, а планки должны оставаться деревом.
+	var fw: float = 0.055          # ширина планки
+	var fd: float = 0.045          # насколько выступает вперёд
+	for side in [-1.0, 1.0]:
+		_part(canvas, Vector3(fw, 0.62 + fw, fd),
+			Vector3(side * (0.39 + fw * 0.5), 0.0, 0.0), wood)
+		_part(canvas, Vector3(0.78 + fw, fw, fd),
+			Vector3(0.0, side * (0.31 + fw * 0.5), 0.0), wood)
 	return canvas
 
 
@@ -1769,6 +1894,7 @@ func _build_ui() -> void:
 	_ensure_action("devmode", KEY_QUOTELEFT)
 	_ensure_action("restart", KEY_R)
 	_ensure_action("monline", KEY_M)
+	_ensure_action("callform", KEY_H)     ## H — вызвать фигуру, только у создателя
 	_make_thread_line()
 	# ОГОНЁК В КОНЦЕ. Нить показывала дорогу, но не цель: если в конце пусто
 	# (полотно далеко и не светится, палочка лежит в темноте), путь читается
@@ -1825,7 +1951,7 @@ func _start_fatality() -> void:
 	monster.visible = true
 	monster._grow_out()
 	fat_to = monster.global_position + Vector3(0.0, 3.35, 0.0)
-	monster.strike_at(player_node.global_position + Vector3(0, 0.9, 0), 9.0)
+	monster.strike_at(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0), 9.0)
 	if sfx != null:
 		# Весь фон уходит на всё добивание: там должно быть слышно только его.
 		sfx.amb_duck(4.2)
@@ -2064,7 +2190,8 @@ func _process(delta: float) -> void:
 		_freeze_player(false)
 	_update_thread(delta)
 	_update_mon_line(delta)
-	_update_phase()
+	_update_phase(delta)
+	_update_ambush(delta)
 	_update_sound(delta)
 	_clock += delta
 	_update_lash(delta)
@@ -2105,8 +2232,8 @@ func _process(delta: float) -> void:
 	# Пока идёт борьба, щупальце по-прежнему держит: иначе оно исчезает ровно
 	# тогда, когда должно быть заметнее всего.
 	if monster != null and grab_ui != null and grab_ui.visible and grab_src == "monster":
-		monster._aim_reach(player_node.global_position + Vector3(0, 0.9, 0))
-	if monster != null and player_node != null and not won:
+		monster._aim_reach(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0))
+	if monster != null and player_node != null and not won and not lab:
 		# Пока игрок рисует, монстр НЕ стоит — он продолжает идти. Но и схватить
 		# не может: захват проверяется только когда игрок в коридоре.
 		monster.tick(delta, player_node.global_position, anger, done >= Shapes.N_CANV)
@@ -2118,7 +2245,10 @@ func _process(delta: float) -> void:
 			_monster_at_canvas(delta)
 	if board.visible or player_node == null or note_ui.visible:
 		return
-	if won:
+	# В ЛАБОРАТОРИИ ПОЛОТНА САМИ НЕ ОТКРЫВАЮТСЯ. Игровой интерфейс там спрятан,
+	# и открывшееся полотно означало бы невидимое окно поверх всего: кнопки
+	# начали бы отказывать («занято»), а ходить стало бы нельзя.
+	if won or lab:
 		return
 	if done < Shapes.N_CANV:
 		if _near(canv_cells[done]):
@@ -2484,7 +2614,11 @@ func _add_table(pos: Vector3, text: String, wand: bool) -> void:
 	# отличить стол с письмом от пустого можно было, только подойдя вплотную.
 	# Наклонный пюпитр с листом виден силуэтом через всю комнату и говорит сам:
 	# сюда что-то положили, чтобы читали.
-	var wood := top.material_override
+	# ДЕРЕВО ПЮПИТРА ТЕМНЕЕ СТОЛЕШНИЦЫ. Он стоит на метр ближе к фонарю, а тот
+	# светит на 25 единиц: на кадре при игровом свете вся конторка выгорала в
+	# белое пятно и читалась железной скобой, а не деревом с листом. Столешницу
+	# трогать нельзя — она в тени, и там цвет верный; значит отдельный материал.
+	var wood := _tex_material("wood", 1.6, Color(0.26, 0.22, 0.18))
 	var desk := Node3D.new()
 	desk.position = pos + Vector3(0, 1.01, 0)
 	add_child(desk)
@@ -2499,10 +2633,27 @@ func _add_table(pos: Vector3, text: String, wand: bool) -> void:
 	var mat := _tex_material("paper", 2.0, Color(0.88, 0.85, 0.76), 0.85)
 	mat.emission_enabled = true
 	mat.emission = Color(0.9, 0.86, 0.7)
-	mat.emission_energy_multiplier = 0.5
+	# И ЛИСТ СВЕТИТСЯ СЛАБЕЕ. Свечение здесь затем, чтобы стол с письмом
+	# было видно издалека, — но вблизи оно добавлялось к засвету и добивало
+	# то, что и так выгорело.
+	mat.emission_energy_multiplier = 0.22
 	var sheet := _part(desk, Vector3(0.40, 0.012, 0.30), Vector3(0.0, 0.17, -0.01),
 		mat, Vector3(-26.0, 0.0, 0.0))
 	sheet.name = "Sheet"
+	# СТРОЧКИ. Лист был ровным бежевым прямоугольником сорок на тридцать, и
+	# вблизи читался плоской карточкой, приклеенной к столу: именно его я
+	# четыре раза принимал за руку, за холст и за железную скобу, пока не
+	# перечислил всё, что стоит рядом.
+	#
+	# Настоящий текст сюда не нужен — записку и так открывает отдельное окно.
+	# Нужен ПРИЗНАК письма: семь тёмных полос разной длины. С двух шагов это
+	# написанный от руки лист, с двадцати сантиметров — тоже.
+	var ink := _material(Color(0.10, 0.09, 0.08))
+	for li in 7:
+		# Длина строк разная, последняя короткая: так пишут, а не печатают.
+		var wln: float = [0.30, 0.27, 0.31, 0.24, 0.29, 0.26, 0.13][li]
+		_part(sheet, Vector3(wln, 0.004, 0.012),
+			Vector3((wln - 0.31) * 0.5, 0.008, -0.10 + float(li) * 0.031), ink)
 
 
 ## Ближайший стол в руке. Луч от ИГРОКА, а не от камеры: камера обновляется позже,
@@ -2669,6 +2820,27 @@ func _unhandled_input(event: InputEvent) -> void:
 		_update_hud()
 	elif event.is_action_pressed("flash"):
 		_do_flash()
+	elif event.is_action_pressed("callform") and Settings.creator_tools():
+		# ВЫЗВАТЬ ФИГУРУ. В собранной игре клавиши нет — она за creator_tools,
+		# как и всё прочее, что игроку видеть нельзя.
+		#
+		# Нужна затем, что «не показался» и «показался, но я не понял» — это
+		# разные беды, а различить их можно только глазами. Прогон на той же
+		# собранной игре говорит, что фигура выходит на 78-й секунде второй
+		# фазы и дважды за три минуты; значит спор идёт не о машинерии.
+		if monster != null and player_node != null:
+			phase = maxi(phase, 2)
+			form_cool = 0.0
+			forms_left = maxi(forms_left, 1)
+			var c2: Vector2i = _cell_in_view(3.0, 6.0)
+			if c2.x >= 0:
+				monster.global_position = cell_to_world(c2)
+			monster.path.clear()
+			monster.mode = "chase"
+			monster.chase_t = maxf(monster.chase_t, FORM_LEN)
+			monster.visible = true
+			monster._grow_out()
+			_take_human_form()
 	elif event.is_action_pressed("monline") and dev:
 		mon_on = not mon_on
 		if monster != null:
@@ -2950,7 +3122,11 @@ func _spawn_monster() -> void:
 
 
 func _on_emerged() -> void:
-	phase = 3
+	# Выход из камня — ВТОРАЯ фаза. Здесь стояло phase = 3, и потому третья
+	# начиналась ровно в тот миг, когда он впервые показался: всё, что для неё
+	# написано (ловушки, выпрыгивания из стен, его постоянный шорох), включалось
+	# сразу и целиком, а сама третья фаза перестала быть событием.
+	phase = maxi(phase, 2)
 	if monster != null:
 		monster.last_phase = true
 		monster.allow_emerge = true
@@ -2972,10 +3148,472 @@ func _far_cell_from(cell: Vector2i) -> Vector2i:
 	return best
 
 
-## Фазы. Первая — он в камне и только слышен. Вторая — шум игрока отбирает слух.
-## Третья наступает не по таймеру, а когда он подобрался сквозь камень вплотную.
-func _update_phase() -> void:
-	pass
+## ─────────────── ФАЗЫ: ЧТО ИХ ВКЛЮЧАЕТ И ЧЕМ ОНИ РАЗЛИЧАЮТСЯ ───────────────
+## Ноль — пролог. Он ползёт в камне, его слышно, и он не делает НИЧЕГО: ни
+##        щупалец, ни скримеров. Две минуты тишины — это цена того, чтобы
+##        первое событие игры было событием.
+## Первая — катсцена с лицом. После неё он бьёт щупальцами из камня и пугает.
+## Вторая — засада за углом. После неё он выходит и ходит по лабиринту.
+## Третья — с шестого полотна. Знает, где ты, всегда.
+func _update_phase(delta: float) -> void:
+	if not started or dead or won or lab:
+		return
+	if face_stage > 0:
+		_face_tick(delta)
+		return
+	if amb_on:
+		_ambush_watch(delta)
+		return
+	match phase:
+		0:
+			if _clock >= PH1_MIN and (_clock >= PH1_AT or done >= PH1_CANV):
+				_face_begin()
+		1:
+			if _clock >= ph1_clock + PH2_GAP \
+					and (_clock >= PH2_AT or done >= PH2_CANV):
+				if ph2_ready < 0.0:
+					ph2_ready = _clock
+				# Ждать засаду бесконечно нельзя: см. PH2_FORCE.
+				if _clock - ph2_ready >= PH2_FORCE:
+					_phase2_force()
+				else:
+					_ambush_arm()
+		2:
+			if _clock >= ph2_clock + PH3_GAP \
+					and (done >= PH3_CANV or _clock >= PH3_AT):
+				_phase3_begin()
+
+
+## ТРЕТЬЯ ФАЗА. Она не даёт ему новых приёмов — она отбирает у игрока его
+## собственный. Всё, чем игрок жил до сих пор, держалось на том, что монстра
+## можно ПОТЕРЯТЬ: разорвать линию взгляда, отойти на тринадцать клеток, и он
+## уходит бродить по тупикам. С шестого полотна это кончается: он знает клетку,
+## паузы вдвое короче, выходит он не там, куда дополз, а рядом с тобой, и
+## вырываться приходится в окне на пятую часть короче. Убежища при этом
+## работают — иначе последние два полотна стали бы не страхом, а лотереей.
+func _phase3_begin() -> void:
+	phase = 3
+	hud.text = Lang.t("h_third")
+	if monster != null:
+		monster.omniscient = true
+		monster.last_phase = true
+		monster.allow_emerge = true
+	amb_next = AMB_AGAIN
+	if sfx != null:
+		sfx.amb_duck(0.9)
+		sfx.play("scrape", 5.0)
+	if player_node != null:
+		player_node.shake(1.6, 0.0)
+		_phase_shock(player_node.global_position
+			- player_node.global_transform.basis.z * -3.0)
+
+
+## «ПРИТВОРЯЕТСЯ СТЕНАМИ» — отдельная засада, и она НЕ в повороте. Первая
+## попытка сделать маскировку внутри угловой засады провалилась, и кадры это
+## показали прямо: на двух клетках от угла коридор просто чёрный — вжатого в
+## камень не видно совсем, — а на одной он уже прыгнул. То есть маскировку
+## игрок не увидел бы ни разу: его хватали в темноте, и «он был стеной»
+## оставалось словами в моём коде.
+##
+## Фонарь светит метра на два. Значит стеной он может притвориться ТОЛЬКО в
+## световом пятне, то есть там, где проходят вплотную. Отсюда и приём: он
+## встаёт в стену прямого участка, даёт себя МИНОВАТЬ — и отлипает за спиной.
+## Это и страшнее: не «на меня прыгнули из темноты», а «стена, мимо которой я
+## только что прошёл, оказалась им».
+## ПОЧЕМУ ПЛИТА, А НЕ ПЛОСКИЙ МОНСТР. Сначала я расплющил ему тело по стене и
+## снял кадры. Тело действительно стало выступом — а руки и ноги остались
+## цепочками звеньев, которые никакая правка масштаба не плющит, и на метре он
+## читался ровно как тварь с растопыренными руками, только ярко подсвеченная.
+## Похожим на камень его не сделать дешёвой правкой: это работа по рукам, ногам
+## и материалу.
+##
+## Зато обратное — дёшево и честнее. Пусть камнем притворяется КАМЕНЬ: в коридор
+## встаёт настоящая плита из того же шейдера стен, с той же коллизией, и она
+## неотличима от стены, потому что она и есть стена. Монстр стоит за ней
+## невидимым. Когда игрок минует это место, плита сходит — и за ней он.
+## Игрок видит не «зелёное пятно оказалось монстром», а «стены здесь стало
+## больше, чем было».
+func _fake_wall_make(cell: Vector2i, flat: Vector3) -> void:
+	_fake_wall_drop()
+	var holder := StaticBody3D.new()
+	holder.name = "FakeWall"
+	add_child(holder)
+	var depth: float = cell_size * 0.42
+	var mi := MeshInstance3D.new()
+	var m := BoxMesh.new()
+	# Плита во всю ширину клетки и во всю высоту: щель по краю выдала бы её
+	# быстрее, чем любой силуэт.
+	var along: Vector3 = Vector3(flat.z, 0.0, flat.x).normalized()
+	m.size = Vector3(absf(along.x) * cell_size + absf(flat.x) * depth, wall_height,
+		absf(along.z) * cell_size + absf(flat.z) * depth)
+	var step: float = [1.2, 0.75, 0.5][Settings.quality]
+	m.subdivide_width = clampi(int(m.size.x / step), 1, 48)
+	m.subdivide_depth = clampi(int(m.size.z / step), 1, 48)
+	m.subdivide_height = clampi(int(wall_height / step), 1, 16)
+	mi.mesh = m
+	mi.material_override = wall_mat
+	# Прижата к той стене, нормаль которой нам дали: выступ, а не столб посреди.
+	var mid: Vector3 = cell_to_world(cell, wall_height * 0.5)
+	mi.position = mid - flat * (cell_size - depth) * 0.5
+	holder.add_child(mi)
+	var cs := CollisionShape3D.new()
+	var sh := BoxShape3D.new()
+	sh.size = m.size
+	cs.shape = sh
+	cs.position = mi.position
+	holder.add_child(cs)
+	fake_wall = holder
+
+
+func _fake_wall_drop() -> void:
+	if fake_wall != null:
+		fake_wall.queue_free()
+		fake_wall = null
+
+
+const WALL_NEAR := 3           ## не ближе столька клеток по маршруту
+const WALL_FAR := 7            ## и не дальше
+const WALL_TOUCH := 1.7        ## на столько подошёл — считается, что миновал
+const WALL_OFF := 2.1          ## и отлип, когда отошёл на столько
+
+func _wall_arm() -> void:
+	if player_node == null or monster == null or _busy() or _attack_busy():
+		return
+	var pc: Vector2i = world_to_cell(player_node.global_position)
+	var goal: Vector2i = canv_cells[done] if done < canv_cells.size() else exit_cell
+	var route: Array[Vector2i] = _path_cells(pc, goal)
+	if route.size() < WALL_NEAR + 2:
+		return
+	for i in range(WALL_NEAR, mini(route.size() - 1, WALL_FAR + 1)):
+		var c: Vector2i = route[i]
+		if safe_cells.has(c) or c == goal or _is_corner(c):
+			continue          # поворот — это другая засада, для неё свой приём
+		for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var wc: Vector2i = c + d
+			if not maze.is_wall(wc.x, wc.y):
+				continue
+			# Клетка — это (строка, столбец) = (z, x); нормаль смотрит ИЗ стены.
+			var flat := Vector3(-float(d.y), 0.0, -float(d.x)).normalized()
+			amb_cell = c
+			amb_hide = c
+			amb_on = true
+			amb_pass = true
+			amb_seen = false
+			amb_t = AMB_HOLD
+			# Он стоит В КАМНЕ за плитой и невидим: пока плита на месте, видеть
+			# его нечем и незачем. Плоским его больше не делаем — нормаль
+			# передаём нулевую, чтобы он не разворачивался и не плющился.
+			monster.ambush_at(wc)
+			monster.visible = false
+			_fake_wall_make(c, flat)
+			return
+
+
+## «ПРЯЧЕТСЯ В УГЛАХ» — это та же засада, но теперь она не событие, а привычка.
+## Ставится она только из камня и только когда игрок не занят: засада поверх
+## погони превратила бы её в телепорт, а это ровно то, за что не любят монстров
+## в таких играх.
+func _update_ambush(delta: float) -> void:
+	if phase < 3 or amb_on or monster == null or dead or won or lab:
+		return
+	amb_next -= delta
+	if amb_next > 0.0:
+		return
+	if monster.mode != "inwall" or _busy() or _attack_busy():
+		return
+	amb_next = randf_range(AMB_AGAIN * 0.7, AMB_AGAIN * 1.5)
+	# Поровну: угол и стена — два разных страха, и привыкнуть нельзя ни к одному.
+	if randf() < 0.5:
+		_ambush_arm()
+	else:
+		_wall_arm()
+
+
+## ПОВОРОТ — это клетка пола, из которой ведут РОВНО два прохода, и они
+## перпендикулярны. Прямой коридор даёт два прохода напротив друг друга,
+## тупик — один, зал — три или четыре. Засада имеет смысл только в повороте:
+## в прямом коридоре его видно издалека, в зале обойти можно с трёх сторон.
+func _is_corner(c: Vector2i) -> bool:
+	if maze.is_wall(c.x, c.y):
+		return false
+	var open: Array = []
+	for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+		if not maze.is_wall(c.x + d.x, c.y + d.y):
+			open.append(d)
+	if open.size() != 2:
+		return false
+	var a: Vector2i = open[0]
+	var b: Vector2i = open[1]
+	return a.x * b.x + a.y * b.y == 0
+
+
+## ЗАСАДА ЗА УГЛОМ — событие второй фазы. До этой правки второй фазой был
+## «монстр когда-нибудь выполз из камня»: он появлялся в случайном месте, в
+## случайную минуту, чаще всего за спиной и далеко. Засада делает из этого
+## встречу: поворот выбирается впереди по ходу, он встаёт ЗА ним и стоит.
+##
+## Ставится не мгновенно: клетку ищем в окне 4–10 шагов по лабиринту. Ближе —
+## игрок уже видит поворот и войдёт в него до того, как там кто-то появится;
+## дальше — он успеет свернуть в другую сторону, и засада будет ждать пустоту.
+const AMB_NEAR := 4            ## не ближе, чем столько шагов
+const AMB_FAR := 10            ## и не дальше
+const AMB_HOLD := 35.0         ## столько ждёт, потом переставляем к игроку
+const AMB_SPRING := 1.7        ## на сколько клеток надо подойти, чтобы прыгнул
+const AMB_CHASE := 22.0        ## погоня после засады: столько она держится
+const AMB_AGAIN := 55.0        ## как часто он снова прячется в углу, третья фаза
+
+func _ambush_arm() -> void:
+	if player_node == null or monster == null or _busy() or _attack_busy():
+		return
+	var pc: Vector2i = world_to_cell(player_node.global_position)
+	# КУДА ОН ИДЁТ — ИЗВЕСТНО: к следующему полотну. Первая версия искала
+	# поворот «где-нибудь в четырёх-десяти шагах от игрока», и замер показал,
+	# чем это кончается: монстр простоял в засаде 114 секунд из 173, подходил
+	# не ближе трёх клеток, и бот просто прошёл другой дорогой. Угол рядом —
+	# это не угол по дороге.
+	var goal: Vector2i = canv_cells[done] if done < canv_cells.size() else exit_cell
+	var route: Array[Vector2i] = _path_cells(pc, goal)
+	if route.size() < AMB_NEAR + 2:
+		return
+	var best: Vector2i = Vector2i(-1, -1)
+	var hide: Vector2i = Vector2i(-1, -1)
+	for i in range(AMB_NEAR, mini(route.size() - 1, AMB_FAR + 1)):
+		var c: Vector2i = route[i]
+		if not _is_corner(c):
+			continue
+		# «За углом» — это следующая клетка МАРШРУТА. Оттуда его не видно, пока
+		# не повернёшь: на том и держится приём. Ставить его в клетку до
+		# поворота значит показать его издалека, то есть отменить засаду.
+		var nxt: Vector2i = route[i + 1]
+		if safe_cells.has(nxt) or nxt == goal:
+			continue
+		best = c
+		hide = nxt
+		break
+	if best.x < 0:
+		return                      # на этом отрезке поворотов нет — ждём
+	amb_cell = best
+	amb_hide = hide
+	amb_on = true
+	amb_t = AMB_HOLD
+	# В ТРЕТЬЕЙ ФАЗЕ ОН ПРИТВОРЯЕТСЯ СТЕНОЙ. Нормаль берём от той стены клетки,
+	# которая смотрит в коридор: вжатый в неё, он торчит выступом камня, а не
+	# стоит предметом посреди прохода. До третьей фазы засада — про поворот,
+	# и вжиматься некуда: там он просто стоит за углом.
+	var flat: Vector3 = Vector3.ZERO
+	if phase >= 3:
+		for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var wc: Vector2i = amb_hide + d
+			if not maze.is_wall(wc.x, wc.y):
+				continue
+			# Нормаль направлена ИЗ стены в клетку, то есть против d.
+			# Клетка — это (строка, столбец) = (z, x), отсюда порядок осей.
+			flat = Vector3(-float(d.y), 0.0, -float(d.x)).normalized()
+			break
+	monster.ambush_at(amb_hide, flat)
+	# Он вышел из камня молча. Единственная подсказка — звук оттуда, и тот
+	# один раз: игрок должен ПОЙТИ туда, а не узнать, что там кто-то есть.
+	if sfx != null:
+		sfx.play_at("skitter", cell_to_world(amb_hide, 0.6), -1.0)
+
+
+## Сторож засады. Три исхода: игрок дошёл — прыжок; игрок ушёл далеко или долго
+## не идёт — переставляем; всё остальное — стоим.
+func _ambush_watch(delta: float) -> void:
+	if monster == null or player_node == null or monster.mode != "ambush":
+		# СНЯТЬ ПЛИТУ. Монстра могло сбросить что угодно — смерть игрока, финал,
+		# уход в камень, — и без этой строки фальшивая стена оставалась в
+		# коридоре навсегда: камень, за которым уже никого нет.
+		amb_on = false
+		amb_pass = false
+		amb_seen = false
+		_fake_wall_drop()
+		if monster != null and not monster.visible and monster.mode != "inwall":
+			monster.visible = true
+		return
+	var d: float = monster.global_position.distance_to(player_node.global_position) / cell_size
+	if amb_pass:
+		# МИМО СТЕНЫ. Сначала дожидаемся, что игрок подошёл вплотную — то есть
+		# посмотрел на этот камень в упор и пошёл дальше, — и только потом,
+		# когда он отошёл, стена отлипает ЗА СПИНОЙ.
+		if d <= WALL_TOUCH:
+			amb_seen = true
+		if amb_seen and d >= WALL_OFF:
+			_ambush_spring()
+			return
+	elif d <= AMB_SPRING or world_to_cell(player_node.global_position) == amb_cell:
+		# Либо подошёл вплотную, либо ВСТАЛ В САМ ПОВОРОТ. Одного расстояния
+		# мало: коридор 2.8 м, и «1.7 клетки» из-за угла честно не достигается,
+		# пока не сделаешь ещё шаг, — а шаг игрок делает уже развернувшись.
+		_ambush_spring()
+		return
+	amb_t -= delta
+	var pc: Vector2i = world_to_cell(player_node.global_position)
+	var dist: Dictionary = maze.distances(pc)
+	var away: int = int(dist.get(amb_cell, 999))
+	if amb_t <= 0.0 or away > AMB_FAR + 6:
+		amb_on = false
+		if amb_pass:
+			amb_pass = false
+			amb_seen = false
+			_fake_wall_drop()
+			if monster != null:
+				monster.visible = true
+			_wall_arm()
+		else:
+			_ambush_arm()
+
+
+func _ambush_spring() -> void:
+	amb_on = false
+	if phase < 2:
+		ph2_clock = _clock
+	var behind: bool = amb_pass
+	amb_pass = false
+	amb_seen = false
+	phase = maxi(phase, 2)
+	monster.spring_ambush(AMB_CHASE)
+	monster.allow_emerge = true
+	hud.text = Lang.t("h_corner")
+	if sfx != null:
+		sfx.sting("угол", 1.0)
+		sfx.play("scream", 3.0)
+		sfx.play_at("whip", monster.global_position, 4.0)
+	if player_node != null:
+		player_node.shake(2.6, 1.0 if _rng.randf() < 0.5 else -1.0)
+	# ОТЛИПШУЮ СТЕНУ НАДО УВИДЕТЬ. Она осталась за спиной, и без разворота
+	# захват пришёл бы из ниоткуда: игрок смотрел бы в пустой коридор, пока
+	# его держат. Поэтому голову разворачивает сцена — на полсекунды, ровно
+	# чтобы понять, что это был не камень.
+	# ПЛИТА СХОДИТ. С этого кадра коридор снова той ширины, что был, — и на
+	# месте лишнего камня стоит он.
+	if behind:
+		_fake_wall_drop()
+		if monster != null:
+			monster.visible = true
+			monster.global_position = cell_to_world(amb_cell, 0.0)
+			monster.set_lit(1.0)
+	if behind and player_node != null:
+		player_node.look_force(monster.global_position + Vector3.UP * 1.2, 1.1, 9.0)
+	# ХВАТАЕТ СРАЗУ. Из-за угла выходят не на того, кто успеет отбежать: смысл
+	# засады в том, что тебя уже держат, и дальше вопрос только в том,
+	# вырвешься ли. Убежать — это уже про погоню после.
+	_grab_now(Lang.t("g_mash"), "monster")
+
+
+## ВТОРАЯ ФАЗА БЕЗ ЗАСАДЫ. Он просто выходит и начинает ходить: это хуже, чем
+## встреча из-за угла, но несравнимо лучше, чем игра, в которой он так и не
+## вышел. Засаду при этом снимаем — иначе он останется стоять в углу, пока
+## фаза идёт своим чередом.
+func _phase2_force() -> void:
+	amb_on = false
+	amb_pass = false
+	amb_seen = false
+	_fake_wall_drop()
+	phase = maxi(phase, 2)
+	ph2_clock = _clock
+	hud.text = Lang.t("h_corner")
+	if monster != null:
+		monster.allow_emerge = true
+		if monster.mode == "ambush":
+			monster.spring_ambush(AMB_CHASE)
+		elif monster.mode == "inwall":
+			monster.inwall_time = MonsterScript.INWALL_CAP + 1.0
+		monster.visible = monster.mode != "inwall"
+	if sfx != null:
+		sfx.play("scrape", 4.0)
+	if player_node != null:
+		_phase_shock(player_node.global_position
+			- player_node.global_transform.basis.z * -3.0)
+
+
+## КАТСЦЕНА ПЕРВОЙ ФАЗЫ. Голову ведёт не игрок: он всматривается в камень,
+## камень дышит, и оттуда выходит кричащее лицо. Щупальце в этой сцене НЕ
+## хватает — оно проносится мимо. Первое появление способности должно её
+## объявить, а не наказать: наказывать будет второе.
+##
+## Сцена ждёт подходящего кадра, а не ставится силой. Поверх открытого полотна,
+## записки или чужого захвата она читалась бы как сбой, поэтому если игрок
+## занят — просто пробуем на следующем кадре. Ждать недолго: стена рядом есть
+## почти всегда, кроме залов.
+func _face_begin() -> void:
+	if player_node == null or _busy() or _attack_busy() or reel_t > 0.0:
+		return
+	var pc: Vector2i = world_to_cell(player_node.global_position)
+	var fwd: Vector3 = -player_node.global_transform.basis.z
+	var best: Vector2i = Vector2i(-1, -1)
+	var bd: float = -2.0
+	for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+		var n: Vector2i = pc + d
+		if not maze.is_wall(n.x, n.y):
+			continue
+		# Из стен рядом выбираем ту, что БЛИЖЕ К ВЗГЛЯДУ: голову всё равно
+		# поведёт сценарий, но доворот на сорок градусов читается как «пригляделся»,
+		# а разворот на сто восемьдесят — как «меня схватили за шею».
+		var to: Vector3 = cell_to_world(n, 1.55) - player_node.global_position
+		to.y = 0.0
+		var k: float = fwd.normalized().dot(to.normalized())
+		if k > bd:
+			bd = k
+			best = n
+	if best.x < 0:
+		return                      # посреди зала стен рядом нет — ждём коридора
+	face_cell = best
+	face_at = cell_to_world(best, 1.55)
+	# ЛИЦО — ЕГО. Он и так в камне, так что переносим его в ту самую стену:
+	# иначе звук придёт из одного места, а тварь останется в другом, и после
+	# сцены игрок пойдёт искать её не туда.
+	if monster != null and monster.mode == "inwall":
+		monster.global_position = cell_to_world(best, 0.0)
+	face_stage = 1
+	face_t = 1.05
+	_freeze_player(true)
+	player_node.look_force(face_at + Vector3.UP * 0.12, 4.2, 3.2)
+	if sfx != null:
+		sfx.amb_duck(0.85)
+		sfx.play_at("scrape", face_at, 1.5)
+
+
+func _face_tick(delta: float) -> void:
+	face_t -= delta
+	if face_t > 0.0:
+		return
+	match face_stage:
+		1:
+			# Камень дышит. Тель тот же, что у обычного удара, — и он здесь
+			# затем, чтобы игрок УЗНАЛ этот звук, когда услышит его в коридоре.
+			face_stage = 2
+			face_t = TELL
+			if sfx != null:
+				sfx.play_at("scrape", face_at, 5.0)
+			player_node.shake(0.8, 0.0)
+		2:
+			# Лицо и крик. Экранный скример — тот же, что у глаз из камня,
+			# только громкий, а вслед за ним из стены выходит щупальце.
+			face_stage = 3
+			face_t = 2.1
+			scare_only = true
+			scare_ui.begin(true, false, _rng.randi())
+			if sfx != null:
+				# УДАР ПЕРВЫМ, крик поверх него. Наоборот — и крик съедает
+				# атаку: он длинный, а вся суть удара в первых миллисекундах.
+				sfx.sting("лицо", 2.0)
+				sfx.play("scream", 4.0)
+				sfx.play_at("whip", face_at, 4.0)
+			var d: Vector3 = player_node.global_position - face_at
+			d.y = 0.0
+			_spawn_tent(face_at, d, 2.6, true)
+			player_node.shake(2.4, 1.0 if _rng.randf() < 0.5 else -1.0)
+		_:
+			# Управление возвращает скример (scare_only), нам остаётся фаза.
+			face_stage = 0
+			phase = 1
+			ph1_clock = _clock
+			hud.text = Lang.t("h_face")
+			if monster != null:
+				monster.retreat_to_wall(6.0, 14.0)
+			# Щупальца начинают считать только теперь: до сцены их не было.
+			lash_t = randf_range(LASH_FIRST[0], LASH_FIRST[1])
 
 
 func _update_mon_line(delta: float) -> void:
@@ -3028,18 +3666,53 @@ func _update_sound(delta: float) -> void:
 	var d: float = player_node.global_position.distance_to(monster.global_position)
 	var hearing: float = player_node.hearing()
 
+	# ОН В КАМНЕ ИЛИ В КОРИДОРЕ — вот что решает громкость. Здесь стояло
+	# «phase >= 3», и это была прямая ложь соседнему комментарию: он обещал,
+	# что громким монстр становится, КОГДА ВЫХОДИТ, а код смотрел на номер
+	# фазы. Замер: погоня второй фазы шла на −14 дБ с одной клетки, то есть
+	# пятой части громкости, — он физически бежал на тебя, и его было почти
+	# не слышно. Теперь тихо только из камня.
+	var out_now: bool = monster.mode != "inwall" and monster.visible
+	# МУЗЫКА СЛЕДИТ ЗА НИМ. Ноль на двенадцати клетках, единица на полутора.
+	# В камне — половина: он там есть, и это должно быть слышно, но пока он не
+	# вышел, напряжение не должно доходить до потолка, иначе потолку некуда
+	# расти в тот момент, ради которого всё и написано.
+	var mus_k: float = clampf(1.0 - (d / cell_size - 1.5) / 10.5, 0.0, 1.0)
+	if not out_now:
+		mus_k *= 0.5
+	if dead or won or not started:
+		mus_k = 0.0
+	sfx.music_near(mus_k, delta)
+	# НАЧАЛО ПОГОНИ — ОТДЕЛЬНЫЙ ЗВУК. До сих пор момент, когда он срывается за
+	# тобой, ничем не отличался от того, как он просто ходил рядом: тот же
+	# скрежет, та же громкость. Ловим переход в погоню и бьём один раз.
+	var chasing: bool = out_now and monster.mode == "chase"
+	chase_sting_t = maxf(0.0, chase_sting_t - delta)
+	if chasing and not was_chasing and chase_sting_t <= 0.0 \
+			and d < cell_size * 12.0:
+		chase_sting_t = 14.0
+		sfx.sting("погоня", 0.0)
+	was_chasing = chasing
+	# И БИТ НА ВСЮ ПОГОНЮ. Удар в начале говорит «началось», бит говорит «идёт»
+	# — это разные сообщения, и второго до сих пор не было вовсе.
+	sfx.beat_level(chasing and not dead and not won, mus_k, delta)
 	_skit_t -= delta
 	if _skit_t <= 0.0:
-		var near: float = clampf(1.0 - d / (cell_size * 10.0), 0.0, 1.0)
+		# И СЛЫШНО ЕГО ДАЛЬШЕ, ПОКА ОН СНАРУЖИ. Порог был десять клеток при
+		# том, что погоню он бросает на тринадцати (LOSE_CELLS): между ними
+		# оставалась полоса, где он бежит за тобой в полной тишине.
+		var far_cells: float = 14.0 if out_now else 10.0
+		var near: float = clampf(1.0 - d / (cell_size * far_cells), 0.0, 1.0)
 		if near > 0.02:
 			# Звук идёт ИЗ ТОЧКИ, где монстр: направление слышно, и по нему
 			# игрок понимает, с какой стороны скребёт.
-			# Пока он в камне — это шорох на пределе слышимости, а не скрежет
-			# в микрофон. Громким он становится, только когда выходит.
-			var quiet: float = 1.0 if phase >= 3 else 0.22
+			var quiet: float = 1.0 if out_now else 0.22
 			var vol: float = linear_to_db(clampf(near * hearing * quiet, 0.01, 1.0))
-			sfx.play_at("scrape" if phase >= 3 else "skitter", monster.global_position, vol)
-		_skit_t = 0.5 + randf() * 1.2 - anger * 0.01
+			sfx.play_at("scrape" if out_now else "skitter", monster.global_position, vol)
+		# И ЧАЩЕ, КОГДА ОН СНАРУЖИ. Раз в секунду с лишним — это шорох в камне;
+		# для бегущего за тобой тела такая пауза читается как «он пропал».
+		_skit_t = (0.28 + randf() * 0.5 if out_now else 0.5 + randf() * 1.2) \
+			- anger * 0.01
 
 	_heart_t -= delta
 	if _heart_t <= 0.0 and d < cell_size * 5.0:
@@ -3080,7 +3753,11 @@ func _busy() -> bool:
 ## Половина ударов ПРОМАХИВАЕТСЯ: частота испугов сохранена, а число схваток вдвое
 ## меньше — утомление убивает страх так же надёжно, как скука.
 func _update_lash(delta: float) -> void:
-	if _clock < GRACE:
+	# ЩУПАЛЕЦ ДО КАТСЦЕНЫ НЕТ. Здесь стояли сорок пять секунд неприкосновенности,
+	# и первый удар прилетал из камня раньше, чем игрок вообще узнавал, что в
+	# камне кто-то есть. Теперь способность объявляет сцена с лицом, а до неё
+	# пролог: его слышно и только.
+	if phase < 1 or lab:
 		return
 	if tell_t >= 0.0:
 		tell_t -= delta
@@ -3244,7 +3921,7 @@ func _update_human_attack(delta: float) -> void:
 	if hf_stage == 0 or player_node == null or monster == null:
 		return
 	hf_t -= delta
-	monster.aim_at = player_node.global_position + Vector3(0, 0.9, 0)
+	monster.aim_at = player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0)
 	if hf_stage == 1:
 		# ОН БЕЖИТ. Втрое быстрее обычного и по прямой: это не погоня, а
 		# развязка — ты уже висишь.
@@ -3301,7 +3978,7 @@ func _human_tongue() -> void:
 	if maze.is_wall(mc.x, mc.y) or _attack_busy():
 		return
 	hf_cool = HF_COOL * 0.45
-	monster.strike_at(player_node.global_position + Vector3(0, 0.9, 0), 3.0)
+	monster.strike_at(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0), 3.0)
 	reel_to = monster.global_position
 	reel_t = 0.7
 	reel_wait = 3.0
@@ -3321,7 +3998,7 @@ func _human_tongue() -> void:
 ## чтобы успеть от неё убежать и понять, что бежал уже не от того, от кого начал.
 func _update_form(delta: float) -> void:
 	form_cool = maxf(0.0, form_cool - delta)
-	if monster == null or player_node == null or phase < 2:
+	if monster == null or player_node == null or phase < 2 or lab:
 		return
 	if forms_left <= 0 or form_cool > 0.0 or dead or won:
 		form_want = -1.0
@@ -3351,7 +4028,11 @@ func _update_form(delta: float) -> void:
 	var fwd: Vector3 = -player_node.global_transform.basis.z
 	fwd.y = 0.0
 	var mc: Vector2i = world_to_cell(monster.global_position)
-	if to.length() <= cell_size * 7.0 and not maze.is_wall(mc.x, mc.y) \
+	# 1. УДОБНЫЙ МОМЕНТ — И ТОЛЬКО В ЗАЛЕ. Раньше он превращался там, где стоял,
+	# и чаще всего это был коридор: тварь вставала в рост и уходила в потолок.
+	# В зале она опускается на четвереньки и смотрит на тебя снизу — по его
+	# словам, это и есть самое страшное, что тут сейчас есть.
+	if to.length() <= cell_size * 7.0 and _is_room_cell(mc) \
 			and to.length() > 0.1 \
 			and fwd.normalized().dot(to.normalized()) >= 0.25:
 		_take_human_form()
@@ -3359,7 +4040,18 @@ func _update_form(delta: float) -> void:
 	# 2. НЕ ДОЖДАЛИСЬ. Ставим его в клетку, которую видно, и выводим наружу.
 	if form_want < FORM_WAIT:
 		return
-	var c: Vector2i = _cell_in_view(3.0, 6.0)
+	# 2. НЕ ДОЖДАЛИСЬ. Сперва ищем видимый ЗАЛ — там он будет зверем. Если зала
+	# в виду нет, берём любую видимую клетку: лучше фигура в коридоре, чем
+	# игра, в которой она не появилась (именно это с ним и случилось).
+	# Зал ищем ДАЛЬШЕ, чем коридор: залы редки, и в шести клетках их обычно нет.
+	var c: Vector2i = _cell_in_view(3.0, 10.0, true)
+	if c.x < 0:
+		# Зала не видно — ЖДЁМ ЕЩЁ. Но не вечно: после двойного ожидания берём
+		# любую видимую клетку. Лучше фигура в коридоре, чем игра, в которой
+		# она так и не появилась.
+		if form_want < FORM_WAIT * 2.0:
+			return
+		c = _cell_in_view(3.0, 6.0)
 	if c.x < 0:
 		return
 	monster.global_position = cell_to_world(c)
@@ -3372,6 +4064,9 @@ func _update_form(delta: float) -> void:
 
 
 func _take_human_form() -> void:
+	# ГДЕ ИМЕННО ОН ПРЕВРАТИЛСЯ. Замерять это со стороны бесполезно: через
+	# секунду он уже уйдёт, и стенд насчитает не то место. Запоминаем здесь.
+	last_form_room = _is_room_cell(world_to_cell(monster.global_position))
 	forms_left -= 1
 	form_cool = FORM_COOL
 	form_want = -1.0
@@ -3384,7 +4079,23 @@ func _take_human_form() -> void:
 ## Свободная клетка ПЕРЕД ИГРОКОМ, до которой есть прямая видимость. Нужна,
 ## чтобы поставить тварь туда, где её увидят, а не за угол и не в спину.
 ## Возвращает (-1, -1), если такой клетки нет — например, игрок уткнулся в тупик.
-func _cell_in_view(near_c: float, far_c: float) -> Vector2i:
+## ЗАЛ ИЛИ КОРИДОР ДЛЯ ОДНОЙ КЛЕТКИ. Та же проверка, по которой монстр решает,
+## тесно ему или нет: стены с двух сторон по одной оси и проход по другой — это
+## коридор, всё остальное — зал. Нужна затем, что ТЕЛО У НЕГО ЗАВИСИТ ОТ МЕСТА:
+## в зале он опускается на четвереньки и морда приходит в камеру снизу, в
+## коридоре встаёт в рост. Первое, по его словам, и есть самое страшное, что в
+## игре сейчас есть, — значит превращение должно целиться именно туда.
+func _is_room_cell(c: Vector2i) -> bool:
+	if maze.is_wall(c.x, c.y):
+		return false
+	var wx: bool = maze.is_wall(c.x, c.y - 1) and maze.is_wall(c.x, c.y + 1)
+	var wz: bool = maze.is_wall(c.x - 1, c.y) and maze.is_wall(c.x + 1, c.y)
+	var ox: bool = not maze.is_wall(c.x, c.y - 1) or not maze.is_wall(c.x, c.y + 1)
+	var oz: bool = not maze.is_wall(c.x - 1, c.y) or not maze.is_wall(c.x + 1, c.y)
+	return not ((wx and oz) or (wz and ox))
+
+
+func _cell_in_view(near_c: float, far_c: float, want_room: bool = false) -> Vector2i:
 	var head: Node3D = player_node.get_node_or_null("Head")
 	var from: Vector3 = player_node.global_position
 	if head != null:
@@ -3410,6 +4121,8 @@ func _cell_in_view(near_c: float, far_c: float) -> Vector2i:
 				continue
 			# Не сбоку и не за спиной: 0.55 — это примерно сорок градусов от
 			# направления взгляда, то есть заведомо в кадре.
+			if want_room and not _is_room_cell(c):
+				continue
 			if fwd.dot(to2.normalized()) < 0.55:
 				continue
 			var q := PhysicsRayQueryParameters3D.create(from, wp + Vector3(0.0, 1.0, 0.0))
@@ -3425,7 +4138,7 @@ func _cell_in_view(near_c: float, far_c: float) -> Vector2i:
 ## соседней клетке камня, только на ходу и только если больше ничего не идёт.
 ## Редкая ловушка запоминается; частая превращается в помеху.
 func _update_trap(_delta: float) -> void:
-	if monster == null or player_node == null or phase < 3:
+	if monster == null or player_node == null or phase < 3 or lab:
 		return
 	if traps_left <= 0 or slam_cool > 0.0 or _busy() or _attack_busy() or dead or won:
 		return
@@ -3468,7 +4181,7 @@ func _start_slam(from_cell: Vector2i) -> void:
 	if to == Vector3.ZERO:
 		to = (player_node.global_position - monster.global_position).normalized()
 		to.y = 0.0
-	slam_to = cell_to_world(here, 0.85) + to * (cell_size * 0.5 - 0.45)
+	slam_to = cell_to_world(here, PlayerScript.STAND_Y) + to * (cell_size * 0.5 - 0.45)
 	# И ВЫХОДИТ ОН ИЗ ТОЙ САМОЙ СТЕНЫ, а не подбегает откуда-то сбоку.
 	slam_from = cell_to_world(from_cell, 0.0)
 	monster.global_position = slam_from
@@ -3478,7 +4191,7 @@ func _start_slam(from_cell: Vector2i) -> void:
 	# любого грохота, потому что игрок не понимает, почему подобрался.
 	if sfx != null:
 		sfx.amb_duck(1.5)
-	monster.strike_at(player_node.global_position + Vector3(0, 0.9, 0), 6.0)
+	monster.strike_at(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0), 6.0)
 	if sfx != null:
 		sfx.play_at("whip", monster.global_position, 8.0)
 	player_node.shake(3.0, 1.0 if _rng.randf() < 0.5 else -1.0)
@@ -3607,7 +4320,7 @@ func _update_slam(delta: float) -> void:
 		slam_stage = 4
 		slam_t = 0.9
 		_freeze_player(true)
-		monster.strike_at(player_node.global_position + Vector3(0, 0.9, 0), 3.0)
+		monster.strike_at(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0), 3.0)
 		if sfx != null:
 			sfx.play_at("whip", monster.global_position, 6.0)
 			sfx.play("scream", 4.0)
@@ -3861,7 +4574,9 @@ func _grab_now(text: String, src: String) -> void:
 	# ВЫДИРАТЬСЯ, а не пережидать, пока отпустят.
 	# Петли рисуем только для щупалец из стен: монстр обвивает настоящими руками.
 	grab_ui.coils = src != "monster"
-	grab_ui.begin(text, loud, _rng.randi(), _madness_stage())
+	# В третьей фазе окно вырывания короче: он держит крепче, и жать надо быстрее.
+	grab_ui.begin(text, loud, _rng.randi(), _madness_stage(),
+		0.82 if phase >= 3 else 1.0)
 	# В захвате рука с палочкой ОСТАЁТСЯ видна, и палочка становится лезвием:
 	# иначе непонятно, чем игрок вообще отбивается.
 	if wand_view != null and has_wand:
@@ -3970,7 +4685,7 @@ func _update_reel(delta: float) -> void:
 			player_node.global_position = nxt
 	# Щупальце всё время держится за тебя, а не висит там, где ты был.
 	if monster != null:
-		monster._aim_reach(player_node.global_position + Vector3(0, 0.9, 0))
+		monster._aim_reach(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0))
 	if reel_t <= 0.0:
 		# Дотянул — теперь давит. Но если в этот момент играет скример или
 		# открыто полотно, _start_grab молча отказывает, и хват теряется: тебя
@@ -4207,7 +4922,7 @@ func _on_caught() -> void:
 		reel_t = 0.85
 		reel_wait = 3.0
 		# И главное: щупальце, которое видно. Оно держится весь захват.
-		monster.strike_at(player_node.global_position + Vector3(0, 0.9, 0), 7.0)
+		monster.strike_at(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0), 7.0)
 		if sfx != null:
 			sfx.play_at("whip", monster.global_position, 4.0)
 		_freeze_player(true)
@@ -4293,7 +5008,7 @@ func _decor_quad(pos: Vector3, normal: Vector3, is_nest: bool) -> void:
 ## без предупреждения. Длинную катсцену игрок запоминает и перестаёт бояться.
 func _update_nests(delta: float) -> void:
 	nest_gap_t = maxf(0.0, nest_gap_t - delta)
-	if _clock < GRACE or nest_gap_t > 0.0:
+	if _clock < GRACE or nest_gap_t > 0.0 or lab:
 		return
 	if _busy() or player_node == null or player_node.invuln > 0.0:
 		return
@@ -4633,7 +5348,7 @@ func _update_safe(delta: float) -> void:
 ## Постоянные QTE превратили бы травлю в рутину, а так стены просто перестают
 ## быть стенами.
 func _update_burst(delta: float) -> void:
-	if phase < 3 or _busy() or player_node == null:
+	if phase < 3 or _busy() or player_node == null or lab:
 		return
 	burst_t -= delta
 	if burst_t > 0.0:
@@ -4795,6 +5510,61 @@ func _toggle_dev() -> void:
 ## Прежние пороги 2/4/7 срабатывали слишком рано: игрок, который просто
 ## аккуратно рисует, проваливался во вторую фазу почти сразу.
 const PHASE_STEP := 5
+## ─────────────────────────── ТРИ ФАЗЫ ───────────────────────────
+## Фазы задумывались по СОБЫТИЯМ, а достались ошибкам игрока: вторая — пять
+## промахов, третья — десять. Кто рисует аккуратно, тот не видел ни одной.
+## Замер бота это и показал: семь полотен из семи за 151 с, ноль хватов, монстр
+## «НИ РАЗУ НЕ ВЫШЕЛ», ноль секунд в коридоре. Монстра выдавали за ошибки, а за
+## умелую игру давали пустой лабиринт.
+##
+## Ноль — пролога: он в камне и только слышен, тела у него нет.
+## Первая  — катсцена с лицом, после неё щупальца и скримеры.
+## Вторая  — засада за углом, после неё он ходит по лабиринту.
+## Третья  — с шестого полотна: знает, где ты, всегда.
+##
+## КАЖДЫЙ ПОРОГ — ВРЕМЯ ИЛИ ПОЛОТНА, ЧТО РАНЬШЕ. Одним временем нельзя: бот
+## проходит игру за 154 секунды, и «через пять минут» для него не наступает
+## никогда — быстрый игрок опять не увидел бы ни второй фазы, ни третьей.
+## Одними полотнами тоже нельзя: кто ходит медленно и осматривается, получил бы
+## все три подряд в первые минуты. Поэтому оба счёта идут сразу, и срабатывает
+## тот, что успел раньше.
+## ...но у КАЖДОГО порога есть ещё и ПОЛ ПО ВРЕМЕНИ. Без него дверь по полотнам
+## обгоняла всё: первое полотно попадается иногда в двух шагах от старта, и
+## замер бота дал катсцену на ДЕСЯТОЙ секунде — пролог, ради которого всё это
+## и затевалось, не состоялся вообще. Пол не мешает медленному игроку (он и так
+## его переждёт) и не пускает быстрого проскочить фазу за четверть минуты.
+const PH1_AT := 120.0      ## секунд до катсцены с лицом
+const PH1_CANV := 1        ## ...или первое сданное полотно
+const PH1_MIN := 45.0      ## но не раньше этой секунды
+const PH2_AT := 420.0      ## секунд до засады за углом
+const PH2_CANV := 3        ## ...или третье сданное полотно
+## ПОЛ ВТОРОЙ ФАЗЫ СЧИТАЕТСЯ ОТ ПЕРВОЙ, А НЕ ОТ НАЧАЛА ИГРЫ. Здесь стояли
+## жёсткие 150 секунд, и на игровой сборке это дало ровно ту болезнь, которую
+## всё это и лечит: бот проходит игру за 151 с, засада успевает только встать,
+## и монстр НИ РАЗУ не выходит — ноль секунд в коридоре за весь проход. Два
+## прогона подряд, не разброс.
+##
+## От часов пол и не должен зависеть: он нужен, чтобы между лицом и засадой
+## была пауза, а не чтобы наступить в такую-то минуту. Шестьдесят секунд после
+## катсцены — это и для быстрого игрока успевает, и медленному не торопит.
+const PH2_GAP := 60.0      ## столько должно пройти ПОСЛЕ первой фазы
+## СТРАХОВКА НА ЗАСАДУ. Вторая фаза начиналась ТОЛЬКО когда засада за углом
+## срабатывала, то есть когда игрок своими ногами заходил в выбранный поворот.
+## Не зашёл — фаза первая навсегда, а вместе с ней нет ни выхода в коридор, ни
+## фигуры гуманоида (она требует фазы 2), ни третьей фазы. Он прошёл всю игру
+## и не увидел фигуру ни разу — вот почему.
+##
+## Засада остаётся ЖЕЛАЕМЫМ входом: встреча из-за угла лучше, чем «он просто
+## появился». Но если она простояла полторы минуты и игрок так и не пришёл,
+## фаза начинается без неё.
+const PH2_FORCE := 90.0
+const PH3_CANV := 6        ## третья — только по полотнам, как и задумано
+const PH3_AT := 900.0      ## страховка для того, кто застрял и не рисует
+## И ТРЕТЬЮ ОТ ВТОРОЙ. Первый же прогон после починки дал «2 на 145 с → 3 на
+## 145 с»: полотна у быстрого игрока кончаются раньше, чем он успевает пожить
+## во второй фазе, и она схлопывается в одну секунду. Фаза, которой не было, —
+## это то же самое, что её нет в коде.
+const PH3_GAP := 45.0      ## столько должно пройти ПОСЛЕ второй фазы
 const MAD_MAX := 15
 ## Нижняя граница вида камня: на сколько лабиринт «зелен» при нулевом безумии.
 const MAD_FLOOR := 0.07            ## дальше копится не безумие, а ярость
@@ -4821,17 +5591,9 @@ func _add_madness(reason: String) -> void:
 		hud.text = str(MAD_SAY[errors])
 	else:
 		hud.text = reason + " ЛАБИРИНТ ЭТО ЗАПОМНИЛ."
-	# Вторая фаза — глухота. Наступает от ошибок: чем хуже лабиринт, тем меньше
-	# ты слышишь, а слух — единственное, чем ты его находишь.
-	if phase == 1 and errors >= PHASE_STEP:
-		phase = 2
-		if player_node != null:
-			_phase_shock(player_node.global_position - player_node.global_transform.basis.z * -3.0)
-	# Третья фаза наступает и по ошибкам тоже: монстр выходит через пару ошибок
-	# после второй, не дожидаясь, пока доползёт сквозь камень.
-	if phase == 2 and errors >= PHASE_STEP * 2 and monster != null and monster.mode == "inwall":
-		monster.allow_emerge = true
-		monster.inwall_time = MonsterScript.INWALL_CAP + 1.0
+	# ОШИБКИ БОЛЬШЕ НЕ РЕШАЮТ ФАЗУ. Они по-прежнему портят мир — камень зеленеет,
+	# туман густеет, слух садится, — и по-прежнему копят ярость. Но какая идёт
+	# фаза, решают время и полотна: см. _update_phase.
 	_apply_madness()
 
 
@@ -4850,6 +5612,8 @@ func apply_quality() -> void:
 	if wall_mat != null:
 		wall_mat.set_shader_parameter("detail", [0.0, 0.55, 1.0][q])
 		wall_mat.set_shader_parameter("near_dist", [2.0, 2.6, 3.2][q])
+		# Зерно камня: на низком его нет совсем — там оно и не считается.
+		wall_mat.set_shader_parameter("grain_k", [0.0, 0.5, 1.0][q])
 	if ceil_mat != null:
 		ceil_mat.set_shader_parameter("detail", [0.0, 0.55, 1.0][q])
 		ceil_mat.set_shader_parameter("near_dist", [3.0, 4.5, 6.5][q])
@@ -5533,9 +6297,26 @@ func _on_step() -> void:
 		sfx.play("step_wet", -30.0, 0.09)
 
 
+## ПОЛОСКА МЕРИТ ТО, ЧТО НАСТУПИТ. Раньше она заполнялась ошибками — то есть
+## показывала, насколько ты плох, а не насколько близко он. Теперь каждый
+## сегмент идёт по тому же «время или полотна, что раньше», что и сама фаза,
+## и потому наполняется ровно тем, что игрок чувствует.
 func _phase_fill(i: int) -> float:
-	var lo := i * PHASE_STEP
-	return clampf(float(errors - lo) / float(PHASE_STEP), 0.0, 1.0)
+	if phase > i:
+		return 1.0
+	if phase < i:
+		return 0.0
+	match i:
+		0:
+			return maxf(_clock / PH1_AT, float(done) / float(PH1_CANV))
+		1:
+			return minf(maxf((_clock - ph1_clock) / maxf(1.0, PH2_AT - PH1_AT),
+				float(done - PH1_CANV) / float(maxi(1, PH2_CANV - PH1_CANV))),
+				(_clock - ph1_clock) / PH2_GAP)
+		_:
+			return minf(maxf((_clock - ph2_clock) / maxf(1.0, PH3_AT - PH2_AT),
+				float(done - PH2_CANV) / float(maxi(1, PH3_CANV - PH2_CANV))),
+				(_clock - ph2_clock) / PH3_GAP)
 
 
 func _draw_phases() -> void:
@@ -5581,9 +6362,16 @@ func _on_wall_hit(pos: Vector3, on_wall: bool) -> void:
 	if sfx == null or player_node == null:
 		return
 	var d: float = player_node.global_position.distance_to(pos)
-	if d > 22.0:
+	if d > 22.0 and not on_wall:
 		return
 	if on_wall:
+		# УПОР О СТЕНУ СЛЫШЕН ДАЛЬШЕ ОСТАЛЬНОГО. Это его шаг, и это главное
+		# «он идёт»: восемь метров отсечки означали, что приближение начинает
+		# быть слышно, когда убегать уже поздно. Гасит расстояние сам движок —
+		# источник трёхмерный, — так что дальний упор остаётся тихим, а не
+		# бьёт в упор из-за угла.
+		if d > 34.0:
+			return
 		sfx.slap(pos, 1.0)
 		return
 	# Опора на пол — не удар, а хлюп: он ползёт по той же мокрой мерзости, по
@@ -5652,6 +6440,10 @@ func _on_surfacing() -> void:
 ## по звуку, подходил и вытаскивал наружу раньше срока.
 func _on_wall_scare() -> void:
 	if _busy() or won:
+		return
+	# В прологе он не пугает: подойти к его стене можно, и ответом будет
+	# тишина. Пугать он начинает с той минуты, как показал лицо.
+	if phase < 1 or face_stage > 0:
 		return
 	scare_only = true
 	scare_ui.begin(false, false, _rng.randi())

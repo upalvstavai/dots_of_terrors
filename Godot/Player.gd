@@ -59,7 +59,37 @@ signal sprint_ended
 
 var yaw: float = 0.0
 var pitch: float = 0.0
+## РОСТ. Был 1.70 с глазом на 1.63 — взрослый человек. Друг, игравший впервые,
+## сказал про первую комнату: «персонаж огромен». По числам комната нормальная
+## (5.2 × 4.4 × 2.8, кровать взрослая 85 × 188), но потолок приходился в метре
+## с небольшим над глазами, а коридоры к тому времени я поднял до шести метров
+## — после них комната читается кукольной, а сам ты в ней великаном.
+##
+## Я тогда уменьшил его до 1.40 — и это было решение не то. Уменьшать человека,
+## чтобы комната стала ему впору, значит чинить следствие: в детской стоит
+## взрослая кровать 85 × 188, и подросток рядом с ней смотрелся бы так же
+## неправильно, только наоборот.
+##
+## Стало 1.78 — обычный взрослый рост, глаз на 1.70. Подгонять под него надо
+## КОМНАТУ, а не наоборот. Лабиринт при этом остаётся огромным: проход 4 метра,
+## потолок 6, то есть над головой всё равно четыре с лишним метра пустоты.
+##
+## Числа держим ЗДЕСЬ, а не россыпью по файлам: высота капсулы, её центр над
+## полом (он же точка постановки) и высота груди, куда целятся щупальца.
+const STAND: float = 1.78          ## полная высота капсулы
+const STAND_Y: float = 0.89        ## центр капсулы = куда ставить игрока
+const EYE_Y: float = 1.70          ## глаз над полом
+const CHEST_Y: float = 0.94        ## грудь: сюда бьют и сюда тянутся
+
 var quick_turn_left: float = 0.0        ## сколько радиан осталось довернуть по Q
+## ВЗГЛЯД ПО СЦЕНАРИЮ. Катсцены до этого не было чем поставить: в игре есть
+## только мышь и рывок по Q, а «персонаж всматривается в стену» — это когда
+## голову ведёт не игрок. Пока таймер идёт, мышь не слушается совсем: иначе
+## игрок инстинктивно дёрнет её в сторону ровно в тот кадр, на который
+## поставлен скример, и не увидит его.
+var look_hold: float = 0.0              ## сколько ещё вести голову по сценарию
+var look_at_w: Vector3 = Vector3.ZERO   ## куда вести
+var look_k: float = 6.0                 ## насколько резко доворачивать
 var noise: float = 0.0
 var noise_peak: float = 0.0
 var wall_touch: float = 0.0             ## сколько секунд подряд упираемся в камень
@@ -148,6 +178,8 @@ func _ensure_action(action: String, keys: Array, pad: Array = []) -> void:
 ## можно было прицелиться в точку на полотне, а полное — быстрый разворот, чтобы
 ## успеть обернуться на звук.
 func _pad_look(delta: float) -> void:
+	if look_hold > 0.0:
+		return
 	var v := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X),
 		Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y))
 	var l: float = v.length()
@@ -162,7 +194,8 @@ func _pad_look(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+			and look_hold <= 0.0:
 		# Приводим тип ЯВНО. У базового InputEvent нет поля relative, поэтому всё,
 		# что из него считано, для парсера — Variant, и вывести тип через := нельзя.
 		# После приведения relative становится честным Vector2 и всё выводится само.
@@ -199,7 +232,35 @@ func _physics_process(delta: float) -> void:
 		sprint_cool -= delta
 
 
+## Повести голову на точку и не отдавать управление, пока идёт сцена.
+func look_force(target: Vector3, seconds: float, sharp: float = 6.0) -> void:
+	look_at_w = target
+	look_hold = seconds
+	look_k = sharp
+
+
+func _look_scripted(delta: float) -> void:
+	look_hold -= delta
+	var head_w: Vector3 = global_position + Vector3.UP * 1.6
+	var to: Vector3 = look_at_w - head_w
+	if to.length_squared() < 0.0004:
+		return
+	# Цель по рысканью берём из плоской проекции, иначе у самой стены, где
+	# вектор смотрит почти вертикально вниз, рысканье начинает метаться.
+	var flat := Vector2(to.x, to.z)
+	if flat.length_squared() > 0.0004:
+		var want_yaw: float = atan2(-flat.x, -flat.y)
+		yaw = lerp_angle(yaw, want_yaw, clampf(look_k * delta, 0.0, 1.0))
+	var want_pitch: float = clampf(atan2(to.y, flat.length()),
+		deg_to_rad(-pitch_limit_deg), deg_to_rad(pitch_limit_deg))
+	pitch = lerpf(pitch, want_pitch, clampf(look_k * delta, 0.0, 1.0))
+
+
 func _turn(delta: float) -> void:
+	if look_hold > 0.0:
+		_look_scripted(delta)
+		rotation.y = yaw
+		return
 	_pad_look(delta)
 	var ts := turn_speed * (turn_boost if Input.is_action_pressed("run") else 1.0)
 	# Input.get_axis(отрицательное, положительное) даёт +1 при нажатии ВТОРОГО.

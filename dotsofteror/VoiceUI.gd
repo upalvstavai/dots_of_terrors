@@ -1,4 +1,5 @@
 extends CanvasLayer
+const UI := preload("res://UI.gd")
 ## ГОЛОС ТВАРИ. Отдельный слой, а не строчка в углу.
 ##
 ## Подсказки игры живут в левом верхнем углу зелёным шрифтом: «ВСПЫШКА. ОНО
@@ -32,7 +33,10 @@ func _ready() -> void:
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	label.add_theme_font_size_override("font_size", 30)
+	# ГОЛОС — КНИЖНОЙ АНТИКВОЙ. Фразы твари не должны читаться интерфейсом: у
+	# подсказок свой шрифт и свой угол экрана, а это говорят тебе.
+	label.add_theme_font_override("font", UI.title(400, 3))
+	label.add_theme_font_size_override("font_size", 38)
 	# Не зелёный, как подсказки, и не белый, как записки: почти бесцветный.
 	label.add_theme_color_override("font_color", Color(0.86, 0.84, 0.82))
 	# Тень, иначе на светлом проломе текста не видно вовсе.

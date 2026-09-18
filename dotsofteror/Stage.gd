@@ -23,10 +23,20 @@ const GOO_SHADER := preload("res://goo.gdshader")
 const Lang := preload("res://Lang.gd")
 const Settings := preload("res://Settings.gd")
 const BoardScript := preload("res://Board.gd")
+const Grab3DScript := preload("res://Grab3D.gd")
 const Shapes := preload("res://Shapes.gd")
 
-const CELL := 2.8
-const WALL_H := 4.3
+## РАЗМЕРЫ БЕРУТСЯ ИЗ ИГРЫ, А НЕ СВОИ.
+##
+## Здесь стояло 2.8 и 4.3 — размеры лабиринта ДО того, как его расширили под
+## нормальный человеческий рост. Ролик с тех пор снимал другой мир: коридор на
+## сорок процентов уже игрового, и, что хуже, тварь заводилась той же строкой
+## `monster.setup(null, CELL, ...)` — значит и посадка ног, и дистанция удара,
+## и стойка считались от чужого числа. На плёнке было существо не из этой игры.
+##
+## Сверять надо с world.gd: cell_size 4.0, wall_height 6.0.
+const CELL := 4.0
+const WALL_H := 6.0
 
 var cam: Camera3D
 var flash: SpotLight3D
@@ -46,6 +56,13 @@ var caption: Label
 var voice: Label
 var thanks: Label
 var board                       ## полотно: то, чем игрок вообще действует
+var board_vp: SubViewport       ## его кадр: он натягивается на лист в мире
+var board_face: MeshInstance3D  ## сам лист на мольберте
+var grab3d                      ## щупальца и нож в пространстве
+var _slash_from: Vector2 = Vector2.ZERO
+var _slash_to: Vector2 = Vector2.ZERO
+var _slash_k: float = 1.0       ## 0..1 — где сейчас взмах
+var _slash_gap: float = 0.0     ## пауза до следующего взмаха
 var _dot_t: float = 0.0
 var _board_hit_done: bool = false
 ## Что уже выстрелило в текущем акте. Чистится при каждом _start.
@@ -129,7 +146,7 @@ func _ready() -> void:
 	if OS.get_cmdline_user_args().has("англ"):
 		Settings.lang = "en"
 	shots = [
-		{"name": "детская", "len": 15.0, "cap": _cap("это не твоя комната",
+		{"name": "детская", "len": 19.2, "cap": _cap("это не твоя комната",
 			"this is not your room")},
 		# СРАЗУ ПОСЛЕ КОМНАТЫ. В детской он видит блокнот с точками, а здесь
 		# уже соединяет их в лабиринте — механика объясняется без единого слова.
@@ -137,6 +154,11 @@ func _ready() -> void:
 		# куска лента показывала мир и тварь, но не саму игру.
 		{"name": "полотно", "len": 8.0, "cap": _cap("рисовать — единственное, что ты умеешь",
 			"drawing is the only thing you can do")},
+		# СРАЗУ ПОСЛЕ ПОЛОТНА — ЧЕМ ОТБИВАЮТСЯ. Порядок тут смысловой: вот
+		# единственное, что ты умеешь (рисовать), вот чем за это платят
+		# (щупальца в лицо), и вот чем от этого отбиваются (палочка-лезвие).
+		{"name": "нож", "len": 11.0, "cap": _cap("палочка — единственное лезвие",
+			"the wand is your only blade")},
 		{"name": "фазы", "len": 11.0, "cap": ""},
 		{"name": "формы", "len": 20.0, "cap": ""},
 		{"name": "атаки", "len": 19.0, "cap": ""},
@@ -157,7 +179,8 @@ func _ready() -> void:
 		shots = [
 			{"name": "детская", "от": 1.0, "len": 6.5, "cap": "это не твоя комната"},
 			{"name": "полотно", "от": 0.0, "len": 7.0, "cap": "рисовать — единственное, что ты умеешь"},
-			{"name": "фазы", "от": 1.5, "len": 8.0, "cap": "лабиринт портится вместе с тобой"},
+			{"name": "нож", "от": 1.6, "len": 6.5, "cap": "палочка — единственное лезвие"},
+			{"name": "фазы", "от": 1.5, "len": 7.0, "cap": "лабиринт портится вместе с тобой"},
 			{"name": "тварь", "от": 1.2, "len": 5.0, "cap": "оно ходит сквозь камень"},
 			{"name": "титр", "от": 0.0, "len": 4.5, "cap": "ТОЧКИ УЖАСА"},
 		]
@@ -176,6 +199,7 @@ func _ready() -> void:
 			# Берём с 1.5 с: к этому времени часть линий уже проведена, и доска
 			# читается сразу, а не начинается с пустоты.
 			{"name": "полотно", "от": 1.5, "len": 5.5, "cap": "YOUR ONLY WEAPON IS DRAWING"},
+			{"name": "нож", "от": 1.6, "len": 5.6, "cap": "AND YOUR ONLY BLADE"},
 			{"name": "детская", "от": 0.6, "len": 6.0, "cap": "THIS IS NOT YOUR ROOM"},
 			{"name": "фазы", "от": 2.2, "len": 6.0, "cap": "THE MAZE ROTS WITH YOU"},
 			{"name": "формы", "от": 11.0, "len": 6.0, "cap": "IT IS NOT ALWAYS ITSELF"},
@@ -284,11 +308,28 @@ func _build_ui() -> void:
 	layer.add_child(voice)
 	# ПОЛОТНО. Единственное, чем игрок вообще действует, — и в ленте его до сих
 	# пор не было вовсе: ролик показывал мир и тварь, но не игру.
+	#
+	# И ТЕПЕРЬ ОНО В МИРЕ, А НЕ ПОВЕРХ ЭКРАНА. В игре полотно давно висит
+	# листом на мольберте: камера смотрит на настоящий предмет в коридоре, по
+	# нему течёт краска, и на сдаче он прожигает темноту. Лента же показывала
+	# прежнее плоское окно во весь кадр — то есть другую игру. Кадр собираем
+	# тем же способом, что и мир: полотно рисуется в отдельный SubViewport,
+	# а тот натягивается на лист.
+	board_vp = SubViewport.new()
+	board_vp.size = Vector2i(1000, 800)
+	board_vp.transparent_bg = false
+	board_vp.canvas_item_default_texture_filter = \
+		Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_LINEAR
+	board_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	board_vp.disable_3d = true
+	add_child(board_vp)
 	board = BoardScript.new()
+	# Растянут по кадру viewport-а: размер ему задаёт сам кадр, руками его
+	# трогать нельзя — Godot всё равно перезапишет после _ready и предупредит.
 	board.set_anchors_preset(Control.PRESET_FULL_RECT)
 	board.visible = false
 	board.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(board)
+	board_vp.add_child(board)
 	hint = Label.new()
 	hint.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	hint.position = Vector2(18, 14)
@@ -307,6 +348,11 @@ func _clear_set() -> void:
 	nursery = null
 	wall_mat = null
 	ceil_mat = null
+	# Лист жил в set_root: он ушёл вместе с декорацией, и ссылку надо погасить,
+	# иначе следующий акт трогает освобождённый узел.
+	board_face = null
+	if grab3d != null:
+		grab3d.finish()
 	monster.visible = false
 	monster.form_hold = 0.0
 	monster.form_t = 0.0
@@ -701,6 +747,56 @@ func _mound(at: Vector3) -> void:
 ## КЛЮЧЕВОЙ СВЕТ. Для ролика это законно: декорация и монстр те же, просто
 ## поставлен свет под камеру. В игре тут светила бы палочка игрока — но её
 ## конус смотрит туда же, куда камера, и атаку сбоку он не вытягивает.
+## МОЛЬБЕРТ С ЛИСТОМ. Три ноги, перекладина и лист, на который натянут кадр
+## полотна. Всё то же, что стоит в игре, — просто собранное здесь вручную:
+## сборщики мира живут в world.gd и площадке недоступны.
+func _easel(at: Vector3) -> void:
+	var wood := StandardMaterial3D.new()
+	var wt: Texture2D = load("res://tex/wood_color.jpg")
+	if wt != null:
+		wood.albedo_texture = wt
+		wood.uv1_scale = Vector3(2.2, 2.2, 1.0)
+	wood.albedo_color = Color(0.34, 0.28, 0.23)
+	wood.roughness = 0.92
+	var ноги: Array = [
+		[Vector3(-0.34, 0.78, 0.10), Vector3(0.06, 1.55, 0.06), 8.0],
+		[Vector3(0.34, 0.78, 0.10), Vector3(0.06, 1.55, 0.06), -8.0],
+		[Vector3(0.0, 0.75, -0.32), Vector3(0.06, 1.5, 0.06), 0.0],
+		[Vector3(0.0, 0.64, 0.08), Vector3(0.86, 0.07, 0.07), 0.0],
+	]
+	for нога in ноги:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = нога[1]
+		mi.mesh = bm
+		mi.material_override = wood
+		mi.position = at + нога[0]
+		mi.rotation_degrees = Vector3(0.0, 0.0, float(нога[2]))
+		set_root.add_child(mi)
+	# ЛИСТ. Тот же размер и тот же материал, что в игре: кадр в sRGB, свечение
+	# по той же картинке, без освещения и с обеих сторон.
+	board_face = MeshInstance3D.new()
+	var q := QuadMesh.new()
+	q.size = Vector2(0.90, 0.72)
+	board_face.mesh = q
+	set_root.add_child(board_face)
+	var tex: Texture2D = board_vp.get_texture()
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = tex
+	# Кадр хранится в sRGB, а мир берёт альбедо как линейное: без этого чёрный
+	# холст выходит светло-серым. На это я уже наступал в мире.
+	m.albedo_texture_force_srgb = true
+	m.emission_enabled = true
+	m.emission_texture = tex
+	m.emission_energy_multiplier = 0.9
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	board_face.material_override = m
+	# На уровне глаз камеры и лицом к ней: рисуют в упор и прямо.
+	board_face.position = at + Vector3(0.0, 1.62, 0.04)
+	board_face.rotation = Vector3.ZERO
+
+
 func _key_light(at: Vector3, from: Vector3, energy: float) -> void:
 	var l := SpotLight3D.new()
 	l.light_color = Color(0.92, 0.94, 1.0)
@@ -806,17 +902,55 @@ func _start(i: int) -> void:
 			fill.visible = true
 			fill_r.visible = true
 			monster.visible = false
+			# Мольберт с листом в 0.75 м перед камерой: столько и остаётся между
+			# лицом и холстом, когда рисуешь.
+			_easel(Vector3(0.0, 0.0, 2.25))
 			board.visible = true
 			# Настоящее полотно, не обучающее: с таймером и с дрожью. Тизер
 			# должен показать не «как это устроено», а как это давит.
-			board.open(Shapes.POOL[3], 3, 0.35, 1, 4242)
-			_dot_t = 1.0
+			# НОМЕР ПОЛОТНА — ВТОРОЙ, А НЕ ТРЕТИЙ. У третьего теперь помеха
+			# «порядок скрыт»: лента показывает только следующий цвет, и в
+			# кадре она выходит рядом тёмных квадратов. В игре это правильно,
+			# а в ленте лента порядка — единственное, по чему зритель понимает
+			# правило, и прятать её от него незачем.
+			board.open(Shapes.POOL[3], 2, 0.35, 1, 4242)
+			# ТЕМП КЛИКОВ СЧИТАЕМ ОТ ЧИСЛА ТОЧЕК, а не задаём числом. Раньше
+			# стояло 0.42 с на точку при тринадцати точках — это пять с
+			# половиной секунд, ровно до удара, и прожиг сдачи в кадр не
+			# попадал ни разу. А это лучший кадр полотна: линия вспыхивает
+			# насквозь и на секунду освещает коридор.
+			_dot_t = 0.8
 			_board_hit_done = false
+			_step_t = 1.1
+			_step_a = 0.0
 			if sfx != null:
 				sfx.amb_level(0.45)
 				sfx.amb_madness(0.35)
 				sfx.box_pitch(0.70)
 				sfx.box_level(0.24)
+		"нож":
+			# Узкий коридор и никакого мольберта: тебя держат, и всё, что есть
+			# в кадре, — это щупальца, лезвие и жижа.
+			_corridor(16.0, INF, 1)
+			flash.visible = true
+			fill.visible = true
+			fill_r.visible = true
+			monster.visible = false
+			if grab3d == null:
+				grab3d = Grab3DScript.new()
+				add_child(grab3d)
+				grab3d.touched.connect(_on_stage_touched)
+			# Пять щупалец: столько даёт злой хват в игре. Голова — сама камера.
+			grab3d.build(cam, 5, 9731)
+			grab3d.begin()
+			grab3d.aim = Vector2.ZERO
+			_slash_k = 1.0
+			_slash_gap = 0.5
+			if sfx != null:
+				sfx.amb_level(0.55)
+				sfx.amb_madness(0.7)
+				sfx.box_pitch(0.60)
+				sfx.box_level(0.30)
 		"зрители", "добивание":
 			# ВИД 1, А НЕ 3. Третий — самый тёмный набор ламп: 2.8 энергии через
 			# девять метров вместо 4.6 через шесть. Тварь идёт к камере с девяти
@@ -894,6 +1028,8 @@ func _process(delta: float) -> void:
 			_act_attacks(delta)
 		"полотно":
 			_act_board(delta)
+		"нож":
+			_act_knife(delta)
 		"зрители":
 			_act_watch(delta)
 		"добивание":
@@ -918,19 +1054,35 @@ func _process(delta: float) -> void:
 					get_tree().quit()
 
 
-## АКТ 1. Круг по детской — и вниз, в пролом.
+## АКТ 1. Взгляд в дверь на зимнюю улицу, круг по детской — и вниз, в пролом.
+##
+## УЛИЦА ДОБАВЛЕНА, И ЭТО НЕ УКРАШЕНИЕ. Акт строит НАСТОЯЩУЮ детскую из игры, а
+## у неё за дверью теперь коридор с часами и картинами, а дальше зимняя улица со
+## снегом, фонарями и домами. Всё это уже было в кадре — просто камера туда не
+## смотрела: круг начинался сразу с кровати.
+##
+## Четыре секунды в начале: пятимся от двери вглубь комнаты, глядя наружу.
+## Зритель успевает увидеть, ОТКУДА пришёл человек, и только потом — куда попал.
 func _act_nursery() -> void:
-	var orbit: float = 10.5
+	var door: float = 4.2
+	if t < door:
+		var k0: float = t / door
+		var e0: float = k0 * k0 * (3.0 - 2.0 * k0)
+		cam.position = Vector3(0.0, 1.62, lerpf(2.0, -0.2, e0))
+		cam.look_at(Vector3(0.0, 1.5, 9.5), Vector3.UP)
+		return
+	var orbit: float = 10.5 + door
 	if t < orbit:
 		# Медленный оборот вокруг середины комнаты: кровать с силуэтом, стол,
 		# окно, лианы по стенам проходят через кадр сами.
-		var a: float = -1.9 + t * 0.52
-		var r: float = 2.35 - t * 0.055
-		cam.position = Vector3(sin(a) * r, 1.62 - t * 0.02, 0.35 + cos(a) * r)
+		var tt: float = t - door
+		var a: float = -1.9 + tt * 0.52
+		var r: float = 2.35 - tt * 0.055
+		cam.position = Vector3(sin(a) * r, 1.62 - tt * 0.02, 0.35 + cos(a) * r)
 		var look := Vector3(1.05, 0.72, -0.55)      # кровать с девочкой
-		if t > 5.2:
+		if tt > 5.2:
 			# Ко второй половине круга переводим взгляд на пролом.
-			var s2: float = clampf((t - 5.2) / 3.6, 0.0, 1.0)
+			var s2: float = clampf((tt - 5.2) / 3.6, 0.0, 1.0)
 			look = look.lerp(Vector3(0.0, 0.05, 0.4), s2 * s2 * (3.0 - 2.0 * s2))
 		cam.look_at(look, Vector3.UP)
 	else:
@@ -986,10 +1138,34 @@ func _act_phases() -> void:
 const BOARD_HIT := 5.6      ## когда бьёт, от начала акта
 
 
+## Шаги вокруг рисующего: та же поступь, что в игре, и тот же толчок в руку.
+var _step_t: float = 0.0
+var _step_a: float = 0.0
+
+
 func _act_board(delta: float) -> void:
 	var k: float = t
+	# ОН ХОДИТ ВОКРУГ, ПОКА ТЫ РИСУЕШЬ. Это и есть то, ради чего в игре у
+	# полотна вообще появился слух: тварь не замирает, она кружит в семи метрах,
+	# и слышно, с какой стороны. В кадре её не видно — её и не должно быть
+	# видно, — но шаг идёт из точки, панорама его разводит, а близкий шаг
+	# дёргает руку и портит линию. Точка ходит по кругу вокруг камеры.
+	_step_t -= delta
+	if _step_t <= 0.0 and k < BOARD_HIT:
+		_step_t = 0.92
+		_step_a += 0.9
+		var at: Vector3 = cam.global_position + Vector3(
+			sin(_step_a) * 6.5, -1.4, cos(_step_a) * 6.5)
+		if sfx != null:
+			sfx.stomp(at, 0.0)
+		# Ближе всего он проходит за спиной: там и дёргает.
+		var близко: float = clampf(cos(_step_a) * 0.5 + 0.5, 0.0, 1.0)
+		if board != null:
+			board.step_jolt(близко * 0.7)
 	# ДЫШИТ. Полотно держат в руках, а не прибивают к стене.
-	cam.position = Vector3(sin(k * 1.7) * 0.012, 1.62 + sin(k * 2.3) * 0.010, 3.0)
+	# 0.88 м до листа, а не 0.75: в упор лист вылезал за края кадра, и рамка
+	# полотна обрезалась. Столько и стоят у мольберта, когда на него смотрят.
+	cam.position = Vector3(sin(k * 1.7) * 0.012, 1.62 + sin(k * 2.3) * 0.010, 3.13)
 	cam.rotation = Vector3(0.0, 0.0, sin(k * 1.1) * 0.006)
 	if board == null or not board.visible:
 		return
@@ -1002,7 +1178,8 @@ func _act_board(delta: float) -> void:
 	_dot_t -= delta
 	if _dot_t > 0.0:
 		return
-	_dot_t = 0.42
+	# Всё полотно надо успеть за время ДО удара, минус секунда на прожиг.
+	_dot_t = maxf(0.16, (BOARD_HIT - 1.5) / float(maxi(1, board.n)))
 	for d in board.dots:
 		if not bool(d["done"]) and int(d["idx"]) == board.next_idx:
 			board._click(board._dot_pos(d))
@@ -1028,6 +1205,76 @@ func _board_hit(d: float) -> void:
 	cam.rotation.x = sin(d * 29.0) * 0.13 * maxf(0.0, 1.0 - d * 1.8)
 	if d < 0.34:
 		fade.color.a = maxf(fade.color.a, 1.0 - d / 0.34)
+
+
+## АКТ: НОЖ. Самое залипательное, что у игры есть, и в ленте его не было вовсе.
+##
+## Щупальца обвивают лицо, палочка становится лезвием, и каждое надо перепилить
+## в три взмаха; из срезов бьёт жижа, капли садятся на объектив. Всё это —
+## тот же Grab3D, что работает в игре: ни одного отдельного «киношного»
+## щупальца здесь нет, и потребовать показанное вживую можно.
+##
+## Взмахи ведём САМИ, а не через bot_slash: тот ставит нож в две позы за один
+## кадр и режет — для стенда это верно (мерится попадание), а для ленты это
+## значит, что взмаха не видно. Здесь нож едет поперёк щупальца за четверть
+## секунды, и попадание случается само, той же проверкой, что у игрока.
+func _act_knife(delta: float) -> void:
+	if grab3d == null:
+		return
+	# Камера дышит и слегка ведёт: тебя держат, ты не на штативе.
+	cam.position = Vector3(sin(t * 2.1) * 0.02, 1.62 + sin(t * 2.7) * 0.016, 0.0)
+	cam.rotation = Vector3(sin(t * 1.3) * 0.012, sin(t * 0.9) * 0.02,
+		sin(t * 1.7) * 0.016)
+	# Хватка крепнет: свет от лезвия разгорается, щупальца тянут ближе.
+	var grip: float = clampf(0.45 + t * 0.075, 0.0, 1.0)
+	grab3d.tick(delta, grip)
+	if _slash_k < 1.0:
+		_slash_k = minf(1.0, _slash_k + delta / 0.24)
+		# Замедление к концу: рука доводит взмах, а не обрывает его.
+		var e: float = 1.0 - pow(1.0 - _slash_k, 2.2)
+		grab3d.aim = _slash_from.lerp(_slash_to, e)
+		grab3d.try_cut(delta)
+		return
+	_slash_gap -= delta
+	if _slash_gap > 0.0:
+		return
+	if not _aim_slash():
+		return
+	_slash_gap = 0.34
+
+
+## Навести следующий взмах поперёк ближайшего целого щупальца. Возвращает false,
+## если резать больше нечего.
+func _aim_slash() -> bool:
+	for a in grab3d.arms:
+		if bool(a["cut"]) or not a.has("pts") or not a.has("mark_seg"):
+			continue
+		var pts: Array = a["pts"]
+		var k: int = int(a["mark_seg"])
+		var mid: Vector3 = (pts[k] + pts[k + 1]) * 0.5
+		var goal: Vector2 = grab3d._aim_for(mid)
+		var along: Vector2 = grab3d._aim_for(pts[k + 1]) - grab3d._aim_for(pts[k])
+		var cross := Vector2(-along.y, along.x)
+		if cross.length() < 0.001:
+			cross = Vector2(1.0, 0.0)
+		cross = cross.normalized() * 0.5
+		_slash_from = (goal - cross).clamp(Vector2(-1, -1), Vector2(1, 1))
+		_slash_to = (goal + cross).clamp(Vector2(-1, -1), Vector2(1, 1))
+		grab3d.aim = _slash_from
+		_slash_k = 0.0
+		return true
+	return false
+
+
+## Звук порезов на площадке. В игре его даёт мир по сигналу — здесь мира нет.
+func _on_stage_touched(_arm: int, killed: bool) -> void:
+	if sfx == null:
+		return
+	if killed:
+		sfx.play("sever", -1.0, 0.10)
+		sfx.play("whip", -8.0, 0.16)
+	else:
+		sfx.play("slice", -5.0, 0.18)
 
 
 ## АКТ: ЗРИТЕЛИ. Самая наглая фраза набора и удар щупальцем прямо в объектив.

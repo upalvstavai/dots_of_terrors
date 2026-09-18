@@ -11,6 +11,8 @@ extends Node
 ## глазами: монстр виден в камне, руки тянутся в никуда, управление не вернули,
 ## звук подменён синтезом.
 
+const PlayerScript := preload("res://Player.gd")
+const Settings := preload("res://Settings.gd")
 const Shapes := preload("res://Shapes.gd")
 
 var w                          ## мир
@@ -24,6 +26,13 @@ var _seen: Dictionary = {}     ## какие замечания уже гово�
 var pushes: int = 0            ## сколько раз бота пришлось подтолкнуть
 var _drawing: bool = false     ## сейчас решаем полотно
 var gaps: Array = []           ## промежутки между хватами, с
+var mon_near: float = 1e9      ## ближе всего монстр подходил сквозь камень, клеток
+var mon_out: bool = false      ## выходил ли он из камня хоть раз за прогон
+var mon_out_s: float = 0.0     ## сколько секунд он провёл В КОРИДОРЕ, не в камне
+var mon_out_near: float = 1e9  ## ближе всего подходил ИМЕННО В КОРИДОРЕ, клеток
+var reach: Dictionary = {}     ## секунды «он дотягивается», разложенные по помехе
+var ph_log: Array = []         ## когда наступила каждая фаза, секунд от старта
+var ph_last: int = -1
 var _last_grab: float = 0.0
 var watching: bool = false     ## параллельный присмотр во время полного прохода
 var ev: Dictionary = {}        ## что случилось за проход
@@ -157,7 +166,7 @@ func goto_cell(goal: Vector2i, limit: float = 25.0) -> bool:
 			Input.action_press("sprint")
 		else:
 			Input.action_release("sprint")
-		var want: Vector3 = w.cell_to_world(path[0], 0.85)
+		var want: Vector3 = w.cell_to_world(path[0], PlayerScript.STAND_Y)
 		var d: Vector3 = want - p.global_position
 		d.y = 0.0
 		if d.length() < 0.75:
@@ -245,6 +254,79 @@ func set_phase(n: int) -> void:
 
 
 ## Поставить монстра рядом и включить погоню. Возвращает, добежал ли он.
+## ЗВУК ПОГОНИ. Вопрос простой: слышно ли его, когда он бежит за тобой, и
+## становится ли громче вблизи. На слух это не проверить — в прогоне звука нет
+## вообще, а 22% от 100% на слух и не отличишь. Зато можно измерить то, что
+## игра ПРОСИТ сыграть: имя звука, точку, откуда он идёт, и громкость в
+## децибелах, — и разложить по расстоянию до монстра.
+const MON_SOUNDS := ["skitter", "scrape", "roar", "step_wet", "whip", "hit_low"]
+
+func _bucket(d: float) -> String:
+	if d < 1.0:
+		return "0-1"
+	if d < 2.0:
+		return "1-2"
+	if d < 4.0:
+		return "2-4"
+	if d < 6.0:
+		return "4-6"
+	if d < 10.0:
+		return "6-10"
+	return "10+"
+
+
+func scene_chase_sound(ph: int) -> void:
+	say("═══ ЗВУК ПОГОНИ, фаза %d ═══" % ph)
+	var m = w.monster
+	var p = w.player_node
+	w.phase = ph
+	if ph >= 3:
+		m.omniscient = true
+		m.last_phase = true
+	m.drop_hold()
+	m.form_hold = 0.0
+	m.form_t = 0.0
+	m.form_kind = m.FORM_NONE
+	m.global_position = p.global_position + Vector3(0, 0, w.cell_size * 9.0)
+	m.visible = true
+	m.mode = "chase"
+	m._grow_out()
+	var box: Dictionary = {}
+	var span: Dictionary = {}
+	w.sfx.heard.clear()
+	w.sfx.watch = true
+	var t: float = 0.0
+	while t < 45.0:
+		await w.get_tree().physics_frame
+		t += 1.0 / 60.0
+		# Держим погоню насильно: мерим звук погони, а не то, как она кончается.
+		m.mode = "chase"
+		m.chase_t = 999.0
+		var d: float = m.global_position.distance_to(p.global_position) / w.cell_size
+		var b: String = _bucket(d)
+		span[b] = float(span.get(b, 0.0)) + 1.0 / 60.0
+		for e in w.sfx.heard:
+			var nm: String = String(e["имя"])
+			if not MON_SOUNDS.has(nm):
+				continue
+			var key: String = b + "|" + nm
+			var cur: Array = box.get(key, [0, -99.0])
+			box[key] = [int(cur[0]) + 1, maxf(float(cur[1]), float(e["дб"]))]
+		w.sfx.heard.clear()
+	w.sfx.watch = false
+	for b in ["10+", "6-10", "4-6", "2-4", "1-2", "0-1"]:
+		if not span.has(b):
+			continue
+		var parts: Array = []
+		for k in box.keys():
+			if String(k).begins_with(b + "|"):
+				var v: Array = box[k]
+				parts.append("%s ×%d до %.1f дБ" % [
+					String(k).split("|")[1], int(v[0]), float(v[1])])
+		say("  %s клеток (%.0f с): %s" % [
+			b, float(span[b]), ", ".join(parts) if not parts.is_empty() else "ТИШИНА"])
+
+
 func scene_chase(seconds: float) -> void:
 	var m = w.monster
 	var p = w.player_node
@@ -286,7 +368,7 @@ func scene_chase(seconds: float) -> void:
 ## них же ругается: «монстр виден, находясь в камне» — это была моя подстава.
 func stage_clean() -> void:
 	var p = w.player_node
-	p.global_position = w.cell_to_world(w.start_cell, 0.85)
+	p.global_position = w.cell_to_world(w.start_cell, PlayerScript.STAND_Y)
 	var m = w.monster
 	var here: Vector2i = w.start_cell
 	var spot: Vector2i = here
@@ -300,6 +382,421 @@ func stage_clean() -> void:
 	m.path.clear()
 	m.visible = true
 	m._grow_out()
+
+
+## ВРЕМЕННАЯ СЦЕНА. Жалоба на гуманоида — про ПОХОДКУ: шатается, меняет размер,
+## не касается пола. Стоп-кадром это не поймать, нужен ряд кадров и числа.
+## ВРЕМЕННАЯ СЦЕНА. Повторяет его сеанс: он ходил по карте, искал засаду и НЕ
+## рисовал полотна. Вопрос один — наступает ли вторая фаза у того, кто не сдаёт
+## полотна, и через сколько.
+## ВРЕМЕННАЯ ПРОВЕРКА. Клавиша создателя — это код, который никто не вызывает
+## в прогонах, и потому он ломается молча. Жмём её по-настоящему.
+func scene_key_form() -> void:
+	say("═══ КЛАВИША H ═══")
+	say("инструменты создателя: %s" % str(Settings.creator_tools()))
+	var before: int = w.forms_left
+	# НАСТОЯЩЕЕ СОБЫТИЕ, а не Input.action_press: тот лишь ставит состояние
+	# действия, а обработчик игры ждёт СОБЫТИЕ и про состояние не знает.
+	# Первая проверка из-за этого сказала «клавиша не сработала» — врала она,
+	# а не игра. Привязка идёт по ФИЗИЧЕСКОЙ клавише, её и шлём.
+	var ev := InputEventKey.new()
+	ev.physical_keycode = KEY_H
+	ev.pressed = true
+	Input.parse_input_event(ev)
+	await w.get_tree().process_frame
+	for i in 30:
+		await w.get_tree().process_frame
+	# МУЗЫКА. Слышать её я не могу, а проверить — могу: слой напряжения обязан
+	# расти с близостью и опадать без неё.
+	var quiet_db: float = 0.0
+	var loud_db: float = 0.0
+	for i2 in 90:
+		w.sfx.music_near(0.0, 1.0 / 60.0)
+		await w.get_tree().process_frame
+	quiet_db = w.sfx._mus_tense.volume_db
+	for i3 in 90:
+		w.sfx.music_near(1.0, 1.0 / 60.0)
+		await w.get_tree().process_frame
+	loud_db = w.sfx._mus_tense.volume_db
+	say("музыка: вдали %.0f дБ, вплотную %.0f дБ, тон %.2f, спокойный слой %.0f дБ" % [
+		quiet_db, loud_db, w.sfx._mus_tense.pitch_scale, w.sfx._mus_calm.volume_db])
+	if loud_db <= quiet_db + 5.0:
+		warn("слой напряжения не растёт — музыка не следит за монстром")
+	# ПЕРЕХВАТ УРОВНЕЙ. Он сказал: удары работают, музыка и бит — нет. Причина
+	# в том, что мир задаёт эти уровни каждый кадр, и кнопка лаборатории
+	# затиралась. Проверяем ровно это: задать насильно, дать миру поспорить и
+	# посмотреть, кто победил.
+	w.sfx.music_force(1.0)
+	w.sfx.beat_force(1.0)
+	var m0: float = w.sfx._mus_tense.volume_db
+	var b0: float = w.sfx._beat_player.volume_db
+	for i4 in 40:
+		w.sfx.music_near(0.0, 1.0 / 60.0)
+		w.sfx.beat_level(false, 0.0, 1.0 / 60.0)
+	var m1: float = w.sfx._mus_tense.volume_db
+	var b1: float = w.sfx._beat_player.volume_db
+	say("перехват: музыка %.0f -> %.0f дБ, бит %.0f -> %.0f дБ" % [m0, m1, b0, b1])
+	# А ИГРАЮТ ЛИ ОНИ ВООБЩЕ. Громкость можно двигать сколько угодно у
+	# проигрывателя, который молчит: на слух это ровно «не работает».
+	say("проигрыватели: спокойный %s, напряжение %s, бит %s" % [
+		str(w.sfx._mus_calm.playing), str(w.sfx._mus_tense.playing),
+		str(w.sfx._beat_player.playing)])
+	# ГЛАВНАЯ ПРОВЕРКА ЗДЕСЬ. Громкость можно двигать сколько угодно у
+	# проигрывателя, который молчит, — и всё выглядит исправным. Один раз я
+	# так и отчитался: «музыка вдали −60, вплотную −3», а музыки не было
+	# вовсе. Играет или нет — вот что надо спрашивать первым.
+	if not (w.sfx._mus_calm.playing and w.sfx._mus_tense.playing
+			and w.sfx._beat_player.playing):
+		warn("МУЗЫКА МОЛЧИТ: проигрыватель не запустился, громкость тут ни при чём")
+	say("потоки: спокойный %s, напряжение %s, бит %s" % [
+		str(w.sfx._mus_calm.stream != null), str(w.sfx._mus_tense.stream != null),
+		str(w.sfx._beat_player.stream != null)])
+	say("длины потоков: спокойный %.1f с, напряжение %.1f с, бит %.1f с" % [
+		w.sfx._mus_calm.stream.get_length(), w.sfx._mus_tense.stream.get_length(),
+		w.sfx._beat_player.stream.get_length()])
+	say("петли: спокойный режим %d, конец %d; бит режим %d, конец %d" % [
+		w.sfx._mus_calm.stream.loop_mode, w.sfx._mus_calm.stream.loop_end,
+		w.sfx._beat_player.stream.loop_mode, w.sfx._beat_player.stream.loop_end])
+	w.sfx._mus_calm.play()
+	await w.get_tree().process_frame
+	say("после повторного play(): спокойный %s" % str(w.sfx._mus_calm.playing))
+	say("шины: спокойный «%s», бит «%s»; шина Музыка есть: %s" % [
+		w.sfx._mus_calm.bus, w.sfx._beat_player.bus,
+		str(AudioServer.get_bus_index("Музыка") >= 0)])
+	if not is_equal_approx(m0, m1) or not is_equal_approx(b0, b1):
+		warn("мир пересилил лабораторию — кнопки музыки и бита снова мертвы")
+	w.sfx.music_force(-1.0)
+	w.sfx.beat_force(-1.0)
+	# Спад НАМЕРЕННО медленный (0.45 в секунду): «он ушёл» не должно звучать
+	# как выключенный приёмник. Значит и ждать надо по-настоящему — сорока
+	# кадров хватало только до −20 дБ, и проверка ругалась на исправный код.
+	for i5 in 300:
+		w.sfx.music_near(0.0, 1.0 / 60.0)
+		w.sfx.beat_level(false, 0.0, 1.0 / 60.0)
+	say("после возврата игре: музыка %.0f дБ, бит %.0f дБ" % [
+		w.sfx._mus_tense.volume_db, w.sfx._beat_player.volume_db])
+	if w.sfx._mus_tense.volume_db > -50.0:
+		warn("управление не вернулось игре — уровень так и держится насильно")
+	for kind in ["лицо", "угол", "погоня"]:
+		w.sfx.sting(kind, 0.0)
+		_wave_report(kind, w.sfx._stings[kind])
+		await w.get_tree().create_timer(0.4).timeout
+	_wave_report("бит погони", w.sfx._beat_player.stream)
+	w.sfx.beat_level(true, 1.0, 1.0)
+	say("бит на полной близости: %.0f дБ, темп ×%.2f" % [
+		w.sfx._beat_player.volume_db, w.sfx._beat_player.pitch_scale])
+	say("бюджет формы: было %d, стало %d; форма=%d, держится %.1f с" % [
+		before, w.forms_left, w.monster.form_kind, w.monster.form_hold])
+	if w.forms_left == before:
+		warn("клавиша НЕ СРАБОТАЛА и в редакторе — беда в коде, а не в сборке")
+
+
+func scene_wander(minutes: float) -> void:
+	say("═══ БРОЖЕНИЕ БЕЗ ПОЛОТЕН ═══")
+	var t0: float = w._clock
+	var last: int = -1
+	var ends: Array = []
+	for c in w.maze.dead_ends():
+		ends.append(c)
+	if ends.is_empty():
+		warn("тупиков нет")
+		return
+	# СРАЗУ ВТОРАЯ ФАЗА. Ждать её по-настоящему — это четыре минуты на прогон,
+	# а вопрос не в ней: он сам сказал, что монстр уже вылазит по кругу. Вопрос
+	# в том, появляется ли ФИГУРА у того, кто просто ходит.
+	w.phase = 2
+	w.monster.allow_emerge = true
+	var forms0: int = w.forms_left
+	var seen_form: int = 0
+	var i: int = 0
+	while w._clock - t0 < minutes * 60.0:
+		if w.phase != last:
+			last = w.phase
+			say("фаза %d на %.0f с (полотен сдано %d)" % [w.phase, w._clock - t0, w.done])
+		if w.monster.form_kind == w.monster.FORM_HUMAN and w.monster.form_t > 0.5:
+			if seen_form == 0:
+				say("ФИГУРА ПОЯВИЛАСЬ на %.0f с" % [w._clock - t0])
+			seen_form += 1
+		if w.forms_left != forms0:
+			say("бюджет формы: %d -> %d на %.0f с, превратился в %s" % [
+				forms0, w.forms_left, w._clock - t0,
+				"ЗАЛЕ (на четвереньках)" if w.last_form_room else "коридоре (в рост)"])
+			forms0 = w.forms_left
+		# Полотно открылось — УХОДИМ, не рисуя: он именно так и ходил.
+		if w.board != null and w.board.visible:
+			w.board.visible = false
+			w.canvas_arm = false
+		var goal: Vector2i = ends[i % ends.size()]
+		i += 1
+		# ПО ЧАСТЯМ. Целый goto_cell — это до 45 секунд без единого опроса, и
+		# всё, что случилось внутри, стенд видел уже остывшим.
+		await goto_cell(goal, 8.0)
+	say("итог: фаза %d за %.0f с, полотен %d, форм осталось %d, кадров с фигурой %d" % [
+		w.phase, w._clock - t0, w.done, w.forms_left, seen_form])
+	if seen_form == 0:
+		warn("ФИГУРА НЕ ПОЯВИЛАСЬ НИ РАЗУ — ровно то, на что он жалуется")
+
+
+## УДАР ЛИ ЭТО. Три числа решают: пик (насколько громко вообще), громкость по
+## среднему квадрату (насколько плотно) и время до пика (насколько резко).
+## «Нота пианино» — это низкий пик, низкая плотность и медленная атака.
+func _wave_report(name: String, w2) -> void:
+	if w2 == null:
+		return
+	var d: PackedByteArray = w2.data
+	var n: int = d.size() / 2
+	if n <= 0:
+		return
+	var peak: int = 0
+	var at_peak: int = 0
+	var sum2: float = 0.0
+	for i in n:
+		var v: int = absi(d.decode_s16(i * 2))
+		if v > peak:
+			peak = v
+			at_peak = i
+		sum2 += float(v) * float(v)
+	var rms: float = sqrt(sum2 / float(n))
+	# Частоту берём У САМОЙ записи: в этом проекте она 22 050, а не 44 100, и
+	# деление на «обычные» 44 100 занижало длину ровно вдвое.
+	var sr: float = float(w2.mix_rate)
+	say("%s: пик %.0f%% на %.0f мс, плотность %.0f%%, длина %.1f с" % [
+		name, 100.0 * float(peak) / 32767.0,
+		1000.0 * float(at_peak) / sr,
+		100.0 * rms / 32767.0, float(n) / sr])
+
+
+## ВРЕМЕННАЯ СЦЕНА: открыть холст и снять кадр. Подсказку «E — бросить» надо
+## увидеть, а не поверить, что она нарисована.
+func scene_board_shot() -> void:
+	say("═══ ХОЛСТ: КАДР ═══")
+	w.player_node.invuln = 9999.0
+	w._open_board()
+	await w.get_tree().create_timer(0.8).timeout
+	say("холст открыт: %s" % str(w.board.visible))
+	await shot("холст_спокойно")
+	# И тот же холст, когда он подходит: подсказка должна стать красной.
+	w.board.show_near = true
+	w.board.near = 0.8
+	w.board.queue_redraw()
+	await w.get_tree().create_timer(0.5).timeout
+	await shot("холст_он_рядом")
+	# И С ЩУПАЛЬЦАМИ. Надо увидеть, что закрытых точек несколько и что по ним
+	# не вычислить нужную.
+	w.board.show_near = false
+	w.board.punish()
+	await w.get_tree().create_timer(0.4).timeout
+	var idxs: Array = []
+	for tt in w.board.tents:
+		idxs.append(int(tt["idx"]))
+	say("щупальца закрыли точки %s, следующая по очереди %d" % [
+		str(idxs), w.board.next_idx])
+	await shot("холст_щупальца")
+
+
+## ВРЕМЕННАЯ СЦЕНА: витрина декораций. Вопрос «чему не хватает внешности»
+## нельзя решить по памяти — надо посмотреть на каждую вещь при свете.
+func scene_shelf() -> void:
+	say("═══ ВИТРИНА ДЕКОРАЦИЙ ═══")
+	w.player_node.invuln = 9999.0
+	# ПОЛОТНА НЕ ОТКРЫВАТЬ. Первый прогон витрины: холст открылся у первой же
+	# точки и остался поверх всех девяти кадров — снял я интерфейс, а не
+	# декорации. Флаг lab для того и есть.
+	w.lab = true
+	if w.board != null and w.board.visible:
+		w.board.abandon()
+	w.monster.visible = false
+	w.monster.parked = true
+	# ИГРОВОЙ СВЕТ, А НЕ СТУДИЙНЫЙ. Первая витрина снималась с лампой на 22
+	# единицы — она показывала, КАК СДЕЛАНА вещь, и заодно выбеливала её до
+	# неузнаваемости: деревянный пюпитр вышел белой железякой. Здесь горит
+	# только фонарь палочки, то есть ровно то, с чем ходит игрок.
+	w.has_wand = true
+	w.player_node.has_wand = true
+	if w.wand_lamp != null:
+		w.wand_lamp.visible = true
+	if w.wand_view != null:
+		w.wand_view.visible = true
+	if w.dropped_wand != null:
+		w.dropped_wand.queue_free()
+		w.dropped_wand = null
+	# ЧТО ВООБЩЕ ВИСИТ В РУКЕ. Бледная плита на кадре не менялась ни от одной
+	# правки света — значит я правлю не тот предмет. Перечисляем.
+	if w.wand_view != null:
+		for ch in w.wand_view.get_children():
+			var kind: String = ch.get_class()
+			var extra: String = ""
+			if ch is MeshInstance3D:
+				var mm = (ch as MeshInstance3D).mesh
+				extra = " меш=%s" % (mm.get_class() if mm != null else "нет")
+				if mm is BoxMesh:
+					extra += " размер=%s" % str((mm as BoxMesh).size)
+				var mo = (ch as MeshInstance3D).material_override
+				if mo is StandardMaterial3D:
+					extra += " цвет=%s тень=%d" % [
+						str((mo as StandardMaterial3D).albedo_color),
+						(mo as StandardMaterial3D).shading_mode]
+				extra += " слой=%d" % (ch as MeshInstance3D).layers
+			say("в руке: %s (%s)%s видим=%s" % [ch.name, kind, extra, str(ch.visible)])
+	# ЧТО СТОИТ РЯДОМ. Бледную плиту я искал четырьмя догадками подряд и все
+	# четыре раза правил не тот предмет. Перебираем дерево сцены и печатаем
+	# всё, что ближе двух с половиной метров, — гадать больше не о чем.
+	_near_things(w, w.player_node.global_position, 2.5)
+	var spots: Array = []
+	if not w.canv_cells.is_empty():
+		spots.append(["полотно", w.cell_to_world(w.canv_cells[0], 1.2), 3.2])
+	for t in w.tables:
+		spots.append(["стол с запиской", t["pos"] + Vector3(0, 0.5, 0), 2.4])
+		break
+	for n in w.nests:
+		spots.append(["гнездо", n["pos"], 2.6])
+		break
+	if not w.safe_cells.is_empty():
+		spots.append(["убежище", w.cell_to_world(w.safe_cells[0], 0.3), 4.0])
+	for d in w.drips:
+		spots.append(["капель", w.cell_to_world(d["cell"], 2.4), 3.0])
+		break
+	if not w.holes.is_empty():
+		spots.append(["пролом", w.cell_to_world(w.holes[0], 3.0), 6.0])
+	if w.climb_cell.x >= 0:
+		spots.append(["насыпь", w.cell_to_world(w.climb_cell, 1.0), 5.0])
+	spots.append(["стена вблизи", w.cell_to_world(w.start_cell, 1.6)
+		+ Vector3(w.cell_size * 0.5, 0, 0), 1.6])
+	spots.append(["выход", w.cell_to_world(w.exit_cell, 1.2), 3.4])
+	for sp in spots:
+		var at: Vector3 = sp[1]
+		var back: float = float(sp[2])
+		var pc: Vector3 = at + Vector3(0, 0, back)
+		w.player_node.global_position = Vector3(pc.x, PlayerScript.STAND_Y, pc.z)
+		var to: Vector3 = at - w.player_node.global_position
+		w.player_node.rotation.y = atan2(-to.x, -to.z)
+		w.player_node.yaw = w.player_node.rotation.y
+		w.player_node.pitch = clampf(atan2(to.y, Vector2(to.x, to.z).length()), -1.2, 1.2)
+		await w.get_tree().create_timer(0.6).timeout
+		say("витрина: %s" % str(sp[0]))
+		await shot(String(sp[0]))
+
+
+func _near_things(root: Node, at: Vector3, r: float) -> void:
+	var found: int = 0
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if not (n is MeshInstance3D):
+			continue
+		var mi: MeshInstance3D = n
+		if mi.global_position.distance_to(at) > r:
+			continue
+		var mm = mi.mesh
+		var what: String = mm.get_class() if mm != null else "нет"
+		if mm is BoxMesh:
+			what += " " + str((mm as BoxMesh).size)
+		var col: String = ""
+		var mo = mi.material_override
+		if mo is StandardMaterial3D:
+			col = " цвет=" + str((mo as StandardMaterial3D).albedo_color)
+		found += 1
+		if found <= 14:
+			say("рядом: %s | %s%s | %.2f м | слой %d" % [mi.name, what, col,
+				mi.global_position.distance_to(at), mi.layers])
+	say("рядом всего: %d" % found)
+
+
+func _head_y(m) -> float:
+	var sk = m.human_skel
+	if sk == null or not m.hb.has("Head"):
+		return -99.0
+	return (sk.global_transform * sk.get_bone_global_pose(int(m.hb["Head"])).origin).y
+
+
+func scene_human_walk() -> void:
+	say("═══ ГУМАНОИД НА ХОДУ ═══")
+	stage_clean()
+	var m = w.monster
+	var p = w.player_node
+	w.player_node.invuln = 9999.0
+	m.visible = true
+	m._grow_out()
+	m.drop_hold()
+	m.take_form(60.0, m.FORM_HUMAN)
+	# НА ПОЛ, А НЕ НА ВЫСОТУ ИГРОКА. p.global_position.y — это центр капсулы,
+	# 0.85 м; поставив монстра туда, я поднял его над полом сам и потом мерил
+	# «ступни в воздухе». Стенд врал, а не игра.
+	m.global_position = Vector3(p.global_position.x, 0.0,
+		p.global_position.z + w.cell_size * 5.0)
+	# СВЕТ И ВЗГЛЯД. Без палочки в этой сцене темно совсем, а игрок стоит
+	# спиной: первый прогон дал восемь чёрных кадров.
+	w.has_wand = true
+	p.has_wand = true
+	if w.wand_lamp != null:
+		w.wand_lamp.visible = true
+	if w.wand_view != null:
+		w.wand_view.visible = true
+	var t: float = 0.0
+	while t < 2.0:
+		await w.get_tree().physics_frame
+		t += 1.0 / 60.0
+	var sk = m.human_skel
+	var names: Array = []
+	for i in sk.get_bone_count():
+		names.append(sk.get_bone_name(i))
+	say("кости: " + ", ".join(names))
+	for step in 8:
+		var t2: float = 0.0
+		while t2 < 0.55:
+			await w.get_tree().physics_frame
+			t2 += 1.0 / 60.0
+			m.mode = "chase"
+			m.chase_t = 99.0
+			var to: Vector3 = m.global_position - p.global_position
+			p.rotation.y = atan2(-to.x, -to.z)
+			p.yaw = p.rotation.y
+		var low: float = 1e9
+		for i in sk.get_bone_count():
+			var nm: String = sk.get_bone_name(i)
+			if nm.to_lower().contains("foot") or nm.to_lower().contains("toe") \
+					or nm.to_lower().contains("ankle"):
+				var y: float = (sk.global_transform
+					* sk.get_bone_global_pose(i).origin).y
+				low = minf(low, y)
+		var palm: String = ""
+		if sk != null and m.hb.has("Palm.L") and m.hb.has("Palm.R"):
+			var sd: Vector3 = m.side_dir if m.side_dir.length() > 0.1 else Vector3.RIGHT
+			var pl: Vector3 = sk.global_transform * sk.get_bone_global_pose(int(m.hb["Palm.L"])).origin
+			var pr: Vector3 = sk.global_transform * sk.get_bone_global_pose(int(m.hb["Palm.R"])).origin
+			palm = ", ладони вбок %.2f / %.2f м (до стены %.2f)" % [
+				(pl - m.global_position).dot(sd), (pr - m.global_position).dot(sd),
+				w.cell_size * 0.5]
+		say("кадр %d: ступня %.3f, ГОЛОВА на %.2f м (узел %.2f), масштаб %.3f/%.3f, высота %.2f, до игрока %.1f м" % [
+			step, low if low < 1e8 else -99.0, _head_y(m), m.global_position.y,
+			m.human.scale.x, m.human.scale.y, m.human.position.y,
+			m.global_position.distance_to(p.global_position)] + palm)
+		await shot("коридор_%d" % step)
+	# И В ЗАЛЕ. Там он должен быть на четвереньках, а щупальца — из спины.
+	if w.room_rects.is_empty():
+		warn("залов на карте нет — вторую половину замера пропускаю")
+		return
+	var r = w.room_rects[0]
+	var mid: Vector2i = Vector2i(int(r.position.x + r.size.x * 0.5),
+		int(r.position.y + r.size.y * 0.5))
+	p.global_position = w.cell_to_world(mid, PlayerScript.STAND_Y)
+	m.global_position = w.cell_to_world(mid, 0.0) + Vector3(0, 0, w.cell_size * 2.2)
+	for step2 in 3:
+		var t3: float = 0.0
+		while t3 < 0.7:
+			await w.get_tree().physics_frame
+			t3 += 1.0 / 60.0
+			m.mode = "chase"
+			m.chase_t = 99.0
+			var to2: Vector3 = m.global_position - p.global_position
+			p.rotation.y = atan2(-to2.x, -to2.z)
+			p.yaw = p.rotation.y
+		say("зал, кадр %d: тесно=%s, приседание %.2f, ГОЛОВА на %.2f м, до игрока %.1f м" % [
+			step2, str(m.cramped), m.crawl_k, _head_y(m),
+			m.global_position.distance_to(p.global_position)])
+		await shot("зал_%d" % step2)
 
 
 func scene_forms() -> void:
@@ -383,7 +880,7 @@ func scene_attack(kind: String, seconds: float) -> void:
 	# следующая проверка ругается на положение, созданное предыдущей.
 	var pc2: Vector2i = w2.world_to_cell(w2.player_node.global_position)
 	if w2.maze.is_wall(pc2.x, pc2.y):
-		w2.player_node.global_position = w2.cell_to_world(w2.start_cell, 0.85)
+		w2.player_node.global_position = w2.cell_to_world(w2.start_cell, PlayerScript.STAND_Y)
 	if before and not w2.player_node.is_physics_processing():
 		warn("после атаки «%s» управление не вернулось само" % kind)
 
@@ -399,7 +896,7 @@ func run(want: Array) -> void:
 	# стенд останется работать на выброшенном из дерева мире.
 	w.start_ui.skip()
 	w._on_start()
-	w.player_node.global_position = w.cell_to_world(w.start_cell, 0.85)
+	w.player_node.global_position = w.cell_to_world(w.start_cell, PlayerScript.STAND_Y)
 	w.player_node.invuln = 9999.0
 	await w.get_tree().create_timer(0.3).timeout
 	var all: bool = want.is_empty()
@@ -414,8 +911,22 @@ func run(want: Array) -> void:
 		await shot("canvas")
 	if all or want.has("фаза3"):
 		set_phase(3)
+	if want.has("клавиша"):
+		await scene_key_form()
+	if want.has("витрина"):
+		await scene_shelf()
+	if want.has("холст"):
+		await scene_board_shot()
+	if want.has("брожение"):
+		await scene_wander(2.5)
+	if want.has("походка"):
+		await scene_human_walk()
 	if all or want.has("формы"):
 		await scene_forms()
+	if want.has("слышно") or want.has("слышно2"):
+		await scene_chase_sound(2)
+	if want.has("слышно") or want.has("слышно3"):
+		await scene_chase_sound(3)
 	if all or want.has("погоня"):
 		w.monster.drop_hold()
 		w.monster.form_hold = 0.0
@@ -423,7 +934,7 @@ func run(want: Array) -> void:
 	if all or want.has("фигуры"):
 		# Открываем полотно и смотрим, что на нём: имя фигуры, число точек,
 		# и рисуется ли она одним росчерком (нет ли прыжков через пол-листа).
-		w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done], 0.85)
+		w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done], PlayerScript.STAND_Y)
 		w._open_board()
 		await w.get_tree().create_timer(0.5).timeout
 		say("полотно открыто: %s" % str(w.board.visible))
@@ -447,6 +958,8 @@ func run(want: Array) -> void:
 		await scene_wand()
 	if all or want.has("убежище"):
 		await scene_shelter()
+	if want.has("качество"):
+		await scene_quality()
 	if all or want.has("кадры"):
 		await scene_fps()
 	if want.has("фото"):
@@ -526,6 +1039,9 @@ func _watch() -> void:
 			w.streak = 0
 			w.mon_kills = 0
 		for pair in [["удар о стену", w.slam_stage > 0], ["руки с потолка", w.hf_stage > 0],
+				["ФИГУРА ГУМАНОИДА", w.monster != null
+					and w.monster.form_kind == w.monster.FORM_HUMAN
+					and w.monster.form_t > 0.5],
 				["поднял над полом", w.lift_on],
 				["обвал", w.climb_state > 0], ["жижа на экране", w.goo_amt > 0.6],
 				["протёр глаза", w.goo_wipe > 0.0], ["выброс в коридор", w.drop_t > 0.0]]:
@@ -534,6 +1050,49 @@ func _watch() -> void:
 			if on and not was.get(k, false):
 				ev[k] = int(ev.get(k, 0)) + 1
 			was[k] = on
+		# ФАЗЫ. Их три, они наступают по времени или по полотнам, и увидеть их
+		# в отчёте надо ОТДЕЛЬНО: «сдано семь из семи» одинаково выглядит и
+		# когда игру прошли под тремя фазами, и когда под нулевой.
+		if w.phase != ph_last:
+			ph_last = w.phase
+			ph_log.append("%d на %.0f с" % [w.phase, w._clock])
+		# МОНСТР: ВЫШЕЛ ЛИ ОН ВООБЩЕ. Все остальные счётчики считают, что он уже
+		# в коридоре. Но до третьей фазы он сидит в камне, и если игрок успевает
+		# сдать полотна раньше, чем истечёт INWALL_CAP, то ничего из этого
+		# просто не наступает. Расстояние сквозь камень — единственное, что
+		# показывает, был ли он рядом или карта развела их по углам.
+		if w.monster != null and w.player_node != null:
+			if not w.monster.first_out:
+				mon_out = true
+			var dc: float = w.monster.global_position.distance_to(
+				w.player_node.global_position) / w.cell_size
+			mon_near = minf(mon_near, dc)
+			# В КАМНЕ ОН НЕ ЛОВИТ. Поимка проверяется только в ветке коридора,
+			# поэтому «подошёл на 0.3 клетки» сквозь стену ничего не значит:
+			# честны лишь секунды в коридоре и расстояние, взятое там же.
+			if w.monster.mode != "inwall":
+				var dt: float = w.get_process_delta_time()
+				mon_out_s += dt
+				mon_out_near = minf(mon_out_near, dc)
+				# ЧТО МЕШАЕТ ХВАТУ. Он стоит вплотную восемьдесят секунд и не
+				# трогает — значит _on_caught выходит досрочно. Причин там
+				# несколько, и пока не знаешь КАКАЯ, чинить нечего. Считаем
+				# секунды дотягивания по виновнику.
+				if dc * w.cell_size < w.monster.CATCH_DIST:
+					var why: String = "ничего не мешало"
+					if w.board != null and w.board.visible:
+						why = "открыто полотно"
+					elif w.note_ui != null and w.note_ui.visible:
+						why = "открыта записка"
+					elif w.scare_ui != null and w.scare_ui.visible:
+						why = "испуг на экране"
+					elif w.reel_t > 0.0:
+						why = "подтягивание"
+					elif w.player_node.invuln > 0.0:
+						why = "неуязвимость после вырывания"
+					elif w.safe_cells.has(w.world_to_cell(w.player_node.global_position)):
+						why = "игрок в убежище"
+					reach[why] = float(reach.get(why, 0.0)) + dt
 		# Инварианты — на ходу, а не раз в сцену.
 		if int(ev.get("_tick", 0)) % 90 == 0:
 			check_now("проход")
@@ -587,7 +1146,7 @@ func scene_full(ph: int) -> void:
 	# и дальше шли только поимки: три подряд — конец игры, перезагрузка сцены,
 	# и вместе со сценой умирал сам стенд. Полный проход должен начинаться так
 	# же, как начинается игра: он в камне, далеко, и его не видно.
-	w.player_node.global_position = w.cell_to_world(w.start_cell, 0.85)
+	w.player_node.global_position = w.cell_to_world(w.start_cell, PlayerScript.STAND_Y)
 	w.streak = 0
 	w.mon_kills = 0
 	w.anger = 0
@@ -719,7 +1278,7 @@ func scene_climb() -> void:
 		if not w.maze.is_wall(w.climb_cell.x + d2.x, w.climb_cell.y + d2.y):
 			near_cell = w.climb_cell + d2
 			break
-	w.player_node.global_position = w.cell_to_world(near_cell, 0.85)
+	w.player_node.global_position = w.cell_to_world(near_cell, PlayerScript.STAND_Y)
 	await w.get_tree().physics_frame
 	say("поставлен рядом с обвалом, клетка %s" % str(near_cell))
 	var t: float = 0.0
@@ -808,7 +1367,7 @@ func scene_goo() -> void:
 	if far == h:
 		warn("у пролома %s нет прямого прохода — пройти насквозь нельзя" % str(h))
 		return
-	w.player_node.global_position = w.cell_to_world(far, 0.85)
+	w.player_node.global_position = w.cell_to_world(far, PlayerScript.STAND_Y)
 	# Насквозь — если есть куда. В тупиковом закутке выходят той же дорогой,
 	# и второе протирание должно случаться и там.
 	var out: Vector2i = h + (h - far)
@@ -905,7 +1464,7 @@ func _eyes(nm: String, cell: Vector2i, yaw: float, pitch: float = 0.0) -> void:
 	if _cam != null:
 		_cam.current = false
 	var p = w.player_node
-	p.global_position = w.cell_to_world(cell, 0.85)
+	p.global_position = w.cell_to_world(cell, PlayerScript.STAND_Y)
 	p.yaw = yaw
 	p.pitch = pitch
 	p.rotation.y = yaw
@@ -937,7 +1496,7 @@ func _face(nm: String, cells: int) -> bool:
 		var c2: Vector2i = here + d2
 		if w.maze.is_wall(c2.x, c2.y):
 			continue
-		w.player_node.global_position = w.cell_to_world(c2, 0.85)
+		w.player_node.global_position = w.cell_to_world(c2, PlayerScript.STAND_Y)
 		await w.get_tree().physics_frame
 		return await _face(nm, cells)
 	warn("для кадра «%s» не нашлось прямого коридора" % nm)
@@ -967,7 +1526,7 @@ func scene_photo() -> void:
 	# 3. МЕБЕЛЬ И ПОЛОТНО.
 	await _eyes("08_мольберт", w.canv_cells[0] + Vector2i(0, 1),
 		atan2(0.0, 1.0))
-	w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done], 0.85)
+	w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done], PlayerScript.STAND_Y)
 	w._open_board()
 	await w.get_tree().create_timer(0.6).timeout
 	await shot("09_полотно")
@@ -1140,7 +1699,7 @@ func scene_map() -> void:
 ## ПОЧЕМУ СТОИТ. Отдельная короткая проверка: ставим игрока, жмём вперёд и
 ## смотрим, сдвинулся ли он и что в этот момент с игрой.
 func scene_why() -> void:
-	w.player_node.global_position = w.cell_to_world(w.start_cell, 0.85)
+	w.player_node.global_position = w.cell_to_world(w.start_cell, PlayerScript.STAND_Y)
 	await w.get_tree().physics_frame
 	_state("сразу после постановки")
 	var p = w.player_node
@@ -1154,7 +1713,7 @@ func scene_why() -> void:
 	say("за 3 с прошёл %.2f м" % from.distance_to(p.global_position))
 	_state("после трёх секунд ходьбы")
 	# И то же самое у полотна.
-	w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done], 0.85)
+	w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done], PlayerScript.STAND_Y)
 	await w.get_tree().create_timer(1.5).timeout
 	say("на клетке полотна %s: полотно открыто %s, взведено %s, близко %s"
 		% [str(w.canv_cells[w.done]), str(w.board.visible), str(w.canvas_arm),
@@ -1202,6 +1761,13 @@ func _report() -> void:
 func scene_walk_all() -> void:
 	var fails: int = 0
 	var t0: float = Time.get_ticks_msec()
+	# БЕЗ БОГА. На старте прогона стенд ставит invuln = 9999, чтобы сцену не
+	# обрывала смерть, — и в проходе это никогда не снималось. Замер показал,
+	# чего это стоило: монстр дотягивался до бота 41 секунду и все 41 не мог его
+	# тронуть, а отчёт при этом говорил «семь из семи, странного не замечено».
+	# Фазовые прогоны неуязвимость снимают (строка про «по-настоящему»), проход
+	# — нет, и поэтому именно он врал громче всех.
+	w.player_node.invuln = 0.0
 	watching = true
 	_watch()
 	for i in w.canv_cells.size():
@@ -1223,6 +1789,38 @@ func scene_walk_all() -> void:
 	var secs: float = (Time.get_ticks_msec() - t0) / 1000.0
 	say("прошёл: сдано %d полотен из %d за %.0f с, не дошёл до %d" % [
 		w.done, Shapes.N_CANV, secs, fails])
+	# ЧАСТОТА ВСТРЕЧ — мера баланса, а не прохождения. Сами хваты о страхе не
+	# говорят (я жму на вырывание каждым кадром, человек так не может), но
+	# СКОЛЬКО ИХ и КАК ЧАСТО — величина честная, и по ней видно, изменилась
+	# угроза или только показалось.
+	var mid: float = 0.0
+	for g in gaps:
+		mid += float(g)
+	if not gaps.is_empty():
+		mid /= float(gaps.size())
+	say("встреч: хватов %d, поимок %d, промежуток между хватами в среднем %.0f с" % [
+		int(ev.get("хват", 0)), w.captures, mid])
+	# ВЕСЬ СПИСОК СОБЫТИЙ, а не только хваты: ноль хватов сам по себе двусмыслен
+	# — он значит и «не ловил», и «наблюдатель не работал». Отличить одно от
+	# другого можно только по остальным счётчикам в той же строке.
+	var seen: Array = []
+	for k in ev.keys():
+		if String(k).begins_with("_"):
+			continue
+		seen.append("%s ×%d" % [k, int(ev[k])])
+	say("по дороге: %s" % [", ".join(seen) if not seen.is_empty() else "ничего"])
+	say("монстр: %s, сквозь камень подходил на %.1f клетки" % [
+		"выходил из камня" if mon_out else "НИ РАЗУ НЕ ВЫШЕЛ", mon_near])
+	say("в коридоре: %.0f с из %.0f (%.0f%% прохода), ближе всего на %.1f клетки" % [
+		mon_out_s, secs, 100.0 * mon_out_s / maxf(secs, 1.0),
+		mon_out_near if mon_out_near < 1e8 else -1.0])
+	var rp: Array = []
+	for k in reach.keys():
+		rp.append("%s %.0f с" % [k, float(reach[k])])
+	say("форма: осталось попыток %d, откат %.0f с, накоплено ожидания %.0f с, фаза %d" % [
+		w.forms_left, w.form_cool, w.form_want, w.phase])
+	say("фазы: %s" % [" → ".join(ph_log) if not ph_log.is_empty() else "ни одной"])
+	say("дотягивался: %s" % [", ".join(rp) if not rp.is_empty() else "ни секунды"])
 	if w.done < Shapes.N_CANV:
 		warn("сдано только %d полотен из %d — до остальных не дошёл или не нарисовал" % [
 			w.done, Shapes.N_CANV])
@@ -1260,7 +1858,7 @@ func scene_shelter() -> void:
 		warn("убежищ меньше двух — прятаться негде")
 		return
 	var cell: Vector2i = w.safe_cells[1]
-	w.player_node.global_position = w.cell_to_world(cell, 0.85)
+	w.player_node.global_position = w.cell_to_world(cell, PlayerScript.STAND_Y)
 	var m = w.monster
 	m.global_position = w.cell_to_world(cell) + Vector3(0, 0, w.cell_size * 2.0)
 	m.visible = true
@@ -1281,6 +1879,61 @@ func scene_shelter() -> void:
 
 
 ## Кадры в секунду: не проседает ли игра там, где всего много.
+## КАДР НА ТРЁХ КАЧЕСТВАХ. Смысл настройки в том, что на слабой машине она
+## возвращает проценты; проверить это можно только замером всех трёх подряд, в
+## одном прогоне и на одном месте — иначе сравниваешь разные забеги.
+func scene_quality() -> void:
+	say("═══ КАДР ПО КАЧЕСТВУ ═══")
+	var was: int = Settings.quality
+	for q in 3:
+		Settings.quality = q
+		w.apply_quality()
+		# Даём кадру устояться: перестройка стен идёт не мгновенно.
+		var t0: float = 0.0
+		while t0 < 1.2:
+			await w.get_tree().process_frame
+			t0 += w.get_process_delta_time()
+		var t: float = 0.0
+		var worst: float = 999.0
+		var sum: float = 0.0
+		var n: int = 0
+		while t < 3.0:
+			await w.get_tree().process_frame
+			t += w.get_process_delta_time()
+			var f: float = Performance.get_monitor(Performance.TIME_FPS)
+			if f > 1.0:
+				worst = minf(worst, f)
+				sum += f
+				n += 1
+		say("качество %d (%s): в среднем %.0f, худший %.0f" % [q,
+			["низкое", "среднее", "высокое"][q], sum / maxf(1.0, float(n)), worst])
+	# И ОТДЕЛЬНО — ЦЕНА САМОГО ЗЕРНА. Разница между качествами складывается из
+	# сетки, тумана и теней; чтобы знать, сколько стоит именно шум на стенах,
+	# гасим одну эту ручку, не трогая остального.
+	Settings.quality = 2
+	w.apply_quality()
+	for g in [1.0, 0.0]:
+		w.wall_mat.set_shader_parameter("grain_k", g)
+		var t2: float = 0.0
+		while t2 < 0.8:
+			await w.get_tree().process_frame
+			t2 += w.get_process_delta_time()
+		var t3: float = 0.0
+		var sum2: float = 0.0
+		var n2: int = 0
+		while t3 < 3.0:
+			await w.get_tree().process_frame
+			t3 += w.get_process_delta_time()
+			var f2: float = Performance.get_monitor(Performance.TIME_FPS)
+			if f2 > 1.0:
+				sum2 += f2
+				n2 += 1
+		say("высокое, зерно %s: в среднем %.0f" % [
+			"включено" if g > 0.5 else "выключено", sum2 / maxf(1.0, float(n2))])
+	Settings.quality = was
+	w.apply_quality()
+
+
 func scene_fps() -> void:
 	var t: float = 0.0
 	var worst: float = 999.0

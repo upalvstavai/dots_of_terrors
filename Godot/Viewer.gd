@@ -65,6 +65,11 @@ var sfx
 var grab_ui
 var speed: float = 2.6            ## как в погоне: 3.2 * 0.91
 var fast: bool = true
+## В ЛАБОРАТОРИИ СМОТРОВАЯ — ОДНО ИЗ ОКОН, а не отдельная сцена. Выход и Escape
+## там обязаны закрывать ОКНО, а не подменять сцену: подмена выбросила бы всю
+## лабораторию вместе с остальными окнами.
+var in_lab: bool = false
+signal want_close
 
 
 func _ready() -> void:
@@ -575,7 +580,10 @@ func _on_button(what: String) -> void:
 			_say("кручу сам")
 			_lash_t = 6.0
 		"exit":
-			get_tree().change_scene_to_file("res://world.tscn")
+			if in_lab:
+				want_close.emit()
+			else:
+				get_tree().change_scene_to_file("res://world.tscn")
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -584,7 +592,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		grab_ui.press()
 		return
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		get_tree().change_scene_to_file("res://world.tscn")
+		if in_lab:
+			want_close.emit()
+		else:
+			get_tree().change_scene_to_file("res://world.tscn")
 		return
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:

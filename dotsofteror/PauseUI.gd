@@ -7,13 +7,17 @@ extends Control
 ## когда что-то из этого не подошло, он решит, что игра такая.
 
 const Settings := preload("res://Settings.gd")
+const UI := preload("res://UI.gd")
 const Lang := preload("res://Lang.gd")
+const StartScript := preload("res://StartUI.gd")
 
 signal resumed
 signal restarted
 signal wiped
 signal quit_game
 signal quality_changed
+## Закрыли МЕНЮ НАСТРОЕК со стартового экрана — не паузу, а именно меню.
+signal closed
 
 const W := 340.0
 const ROW := 40.0
@@ -33,6 +37,17 @@ var _rows: Array = []             ## кнопки главной страниц�
 var _wipe_btn: Button
 var _wiped: bool = false
 var _qbtn: Button
+var _fbtn: Button                 ## полный экран
+var _lbtn: Button                 ## язык
+var _cbtn: Button                 ## управление
+var _hbtn: Button                 ## как играть
+## ЭТО МЕНЮ, А НЕ ПАУЗА. Играющий (18.09): «сделай отдельное меню настроек в
+## начале игры, снеси всё туда». Настройки жили в паузе, а на стартовом экране
+## торчали только громкость и язык. Теперь одна и та же страница открывается
+## и оттуда, и из паузы — только в меню нет «продолжить», «заново» и «выйти».
+var menu_mode: bool = false
+var _pause_only: Array = []       ## кнопки, которых в меню настроек нет
+var _menu_back: Button
 ## Пока крутят яркость, ЗАТЕМНЕНИЕ ПАУЗЫ РАСХОДИТСЯ. Иначе настройка бессмысленна:
 ## мир под меню закрыт заливкой на 88%, и по нему нельзя судить, стало ли видно.
 var _gam_t: float = 0.0
@@ -62,11 +77,17 @@ func _ready() -> void:
 		add_child(s)
 		_sl[key] = s
 	_qbtn = _add_btn(_quality_text(), _on_quality)
-	_add_btn(Lang.t("controls"), func() -> void: _go(1))
-	_add_btn(Lang.t("resume"), _on_resume)
-	_add_btn(Lang.t("restart"), _on_restart)
+	_fbtn = _add_btn(_full_text(), _on_full)
+	_lbtn = _add_btn(Lang.t("lang_name"), _on_lang)
+	_cbtn = _add_btn(Lang.t("controls"), func() -> void: _go(1))
+	# КАК ИГРАТЬ. Клавиши и правила стояли на главном экране — теперь здесь.
+	_hbtn = _add_btn(Lang.t("howto"), func() -> void: _go(2))
+	_pause_only.append(_add_btn(Lang.t("resume"), _on_resume))
+	_pause_only.append(_add_btn(Lang.t("restart"), _on_restart))
 	_wipe_btn = _add_btn(Lang.t("wipe"), _on_wipe)
-	_add_btn(Lang.t("quit_game"), _on_quit)
+	_pause_only.append(_wipe_btn)
+	_pause_only.append(_add_btn(Lang.t("quit_game"), _on_quit))
+	_menu_back = _add_btn(Lang.t("bind_back"), _on_resume)
 	# Страница управления: по кнопке на действие, плюс сброс и возврат.
 	for a in Settings.BIND_ACTIONS:
 		var act: String = str(a)
@@ -81,12 +102,11 @@ func _ready() -> void:
 
 
 func _mk_btn(text: String) -> Button:
-	var b := Button.new()
-	b.text = text
+	# ТА ЖЕ КНОПКА, ЧТО НА СТАРТОВОМ ЭКРАНЕ. Здесь стояли родные кнопки Godot —
+	# серые коробки из другой программы, — и пауза выглядела служебным окном
+	# поверх игры, а не её частью.
+	var b := UI.button(text, 14, UI.INK, Color(1, 1, 1))
 	b.custom_minimum_size = Vector2(W, 30)
-	b.add_theme_font_size_override("font_size", 14)
-	b.add_theme_color_override("font_color", Color(0.74, 0.73, 0.70))
-	b.add_theme_color_override("font_hover_color", Color(0.95, 0.94, 0.90))
 	b.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	b.visible = false
 	add_child(b)
@@ -106,19 +126,63 @@ func _quality_text() -> String:
 	return Lang.t("quality") + ": " + Lang.t("q%d" % Settings.quality)
 
 
+func _full_text() -> String:
+	return Lang.t("full_on") if Settings.is_fullscreen() else Lang.t("full_off")
+
+
+func _on_full() -> void:
+	Settings.toggle_fullscreen()
+	_fbtn.text = _full_text()
+	queue_redraw()
+
+
+## Язык меняем здесь же, и все подписи страницы — сразу: иначе половина меню
+## осталась бы на старом языке до перезапуска.
+func _on_lang() -> void:
+	Lang.toggle()
+	_relabel()
+
+
+func _relabel() -> void:
+	_qbtn.text = _quality_text()
+	_fbtn.text = _full_text()
+	_lbtn.text = Lang.t("lang_name")
+	_cbtn.text = Lang.t("controls")
+	_hbtn.text = Lang.t("howto")
+	(_pause_only[0] as Button).text = Lang.t("resume")
+	(_pause_only[1] as Button).text = Lang.t("restart")
+	_wipe_btn.text = Lang.t("wipe")
+	(_pause_only[3] as Button).text = Lang.t("quit_game")
+	_menu_back.text = Lang.t("bind_back")
+	_reset_btn.text = Lang.t("bind_reset")
+	_back_btn.text = Lang.t("bind_back")
+	queue_redraw()
+
+
+## Открыть как МЕНЮ НАСТРОЕК со стартового экрана.
+func open_menu() -> void:
+	menu_mode = true
+	if not visible:
+		_open()
+
+
 func toggle() -> void:
 	if visible:
 		_on_resume()
 	else:
-		_wiped = false
-		_bind = ""
-		_page = 0
-		_wipe_btn.text = Lang.t("wipe")
-		_pull()
-		_gam_t = 0.0
-		visible = true
-		set_process(true)
-		queue_redraw()
+		_open()
+
+
+func _open() -> void:
+	_relabel()
+	_wiped = false
+	_bind = ""
+	_page = 0
+	_pull()
+	_gam_t = 0.0
+	visible = true
+	set_process(true)
+	queue_redraw()
 
 
 ## Затянуть в ползунки то, что сейчас в настройках.
@@ -146,21 +210,30 @@ func _process(delta: float) -> void:
 	for s in _sl.values():
 		(s as HSlider).visible = main
 	for b in _rows:
-		(b as Button).visible = main
+		var show: bool = main
+		if menu_mode and _pause_only.has(b):
+			show = false
+		if not menu_mode and b == _menu_back:
+			show = false
+		(b as Button).visible = show
 	for k in _keys:
-		(k["btn"] as Button).visible = not main
-	_reset_btn.visible = not main
+		(k["btn"] as Button).visible = _page == 1
+	_reset_btn.visible = _page == 1
 	_back_btn.visible = not main
-	if main:
+	if _page == 2:
+		_back_btn.position = Vector2(x, size.y * 0.5 + 250.0)
+	elif main:
 		var y: float = size.y * 0.5 - 218.0
 		for row in SLIDERS:
 			(_sl[str(row[0])] as HSlider).position = Vector2(x, y + 16.0)
 			y += 42.0
 		y += 6.0
 		for b in _rows:
+			if not (b as Button).visible:
+				continue
 			(b as Button).position = Vector2(x, y)
 			y += ROW
-	else:
+	if _page == 1:
 		var y2: float = size.y * 0.5 - 232.0
 		for k in _keys:
 			var b: Button = k["btn"]
@@ -185,9 +258,13 @@ func _input(event: InputEvent) -> void:
 	# ESC на странице управления возвращает НА ШАГ НАЗАД, а не закрывает паузу:
 	# иначе из настроек клавиш нельзя выйти, не выйдя заодно и из меню.
 	if _bind == "":
-		if _page == 1 and k.keycode == KEY_ESCAPE:
+		if _page != 0 and k.keycode == KEY_ESCAPE:
 			get_viewport().set_input_as_handled()
 			_go(0)
+		elif menu_mode and k.keycode == KEY_ESCAPE:
+			# Из меню настроек ESC — назад на стартовый экран, а не в игру.
+			get_viewport().set_input_as_handled()
+			_on_resume()
 		return
 	get_viewport().set_input_as_handled()
 	if k.keycode == KEY_ESCAPE:
@@ -234,6 +311,10 @@ func _on_slider(key: String, v: float) -> void:
 func _on_resume() -> void:
 	visible = false
 	set_process(false)
+	if menu_mode:
+		menu_mode = false
+		closed.emit()
+		return
 	resumed.emit()
 
 
@@ -260,17 +341,20 @@ func _on_quit() -> void:
 
 
 func _draw() -> void:
-	var f := ThemeDB.fallback_font
+	var f := UI.text(400)
 	# Затемнение, а не глухая заливка: пауза не должна прятать мир, из паузы
 	# возвращаются обратно в него.
 	var dim: float = lerpf(0.88, 0.16, clampf(_gam_t, 0.0, 1.0))
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.01, 0.01, 0.015, dim))
 	var x: float = (size.x - W) * 0.5
-	var green := Color(0.22, 1.0, 0.62)
-	var grey := Color(0.70, 0.69, 0.66)
+	# Цвета из общей палитры, а не свои: ядовито-зелёный 0.22/1.0/0.62 был ярче
+	# всего, что есть в игре, и подписи ползунков светились сильнее заголовка.
+	var green := UI.ACCENT
+	var grey := UI.DIM
 	if _page == 0:
-		draw_string(f, Vector2(0, size.y * 0.5 - 256.0), Lang.t("paused"),
-			HORIZONTAL_ALIGNMENT_CENTER, size.x, 30, Color(0.84, 0.83, 0.79))
+		# Заголовок — книжной антиквой, как заглавие игры.
+		draw_string(UI.title(400, 6), Vector2(0, size.y * 0.5 - 256.0),
+			Lang.t("settings") if menu_mode else Lang.t("paused"), HORIZONTAL_ALIGNMENT_CENTER, size.x, 36, UI.INK)
 		var y: float = size.y * 0.5 - 218.0
 		for row in SLIDERS:
 			var key: String = str(row[0])
@@ -281,6 +365,8 @@ func _draw() -> void:
 				HORIZONTAL_ALIGNMENT_LEFT, W, 13, green)
 			draw_string(f, Vector2(x, y), txt, HORIZONTAL_ALIGNMENT_RIGHT, W, 13, grey)
 			y += 42.0
+	elif _page == 2:
+		_draw_howto(f)
 	else:
 		draw_string(f, Vector2(0, size.y * 0.5 - 262.0), Lang.t("controls"),
 			HORIZONTAL_ALIGNMENT_CENTER, size.x, 26, Color(0.84, 0.83, 0.79))
@@ -293,3 +379,34 @@ func _draw() -> void:
 			yp += 16.0
 	draw_string(f, Vector2(0, size.y - 34.0), Lang.t("esc_back"),
 		HORIZONTAL_ALIGNMENT_CENTER, size.x, 13, Color(0.42, 0.41, 0.39))
+
+
+## СТРАНИЦА «КАК ИГРАТЬ»: клавиши двумя столбцами и правила под ними — то, что
+## раньше висело на главном экране.
+func _draw_howto(f: Font) -> void:
+	var top: float = size.y * 0.5 - 262.0
+	draw_string(UI.title(400, 6), Vector2(0, top), Lang.t("howto"),
+		HORIZONTAL_ALIGNMENT_CENTER, size.x, 32, UI.INK)
+	var cx: float = size.x * 0.5
+	var fk := UI.text(600)
+	var y0: float = top + 50.0
+	for col in [[StartScript.KEY_LEFT, cx - 420.0], [StartScript.KEY_RIGHT, cx + 60.0]]:
+		var y: float = y0
+		for pair in col[0]:
+			var cap: String = str(pair[0])
+			if cap == "":
+				cap = Lang.t("k_mouse") if pair[1] == "k_look" else Lang.t("k_space")
+			draw_string(fk, Vector2(float(col[1]), y), cap, HORIZONTAL_ALIGNMENT_RIGHT,
+				120.0, 13, UI.ACCENT)
+			draw_string(f, Vector2(float(col[1]) + 132.0, y), Lang.t(str(pair[1])),
+				HORIZONTAL_ALIGNMENT_LEFT, 340.0, 14, UI.INK)
+			y += 25.0
+	var yr: float = y0 + 4.0 * 25.0 + 24.0
+	UI.rule(self, Vector2(cx, yr - 12.0), 420.0, UI.FAINT)
+	for k in StartScript.RULE_KEYS:
+		if str(k) == "":
+			yr += 10.0
+			continue
+		draw_string(f, Vector2(0, yr + 10.0), Lang.t(str(k)),
+			HORIZONTAL_ALIGNMENT_CENTER, size.x, 14, UI.DIM)
+		yr += 24.0

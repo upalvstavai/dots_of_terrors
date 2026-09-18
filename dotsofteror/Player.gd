@@ -20,9 +20,27 @@ extends CharacterBody3D
 ## подходит. Множитель держим ниже потолка монстра (1.5 от игрока), иначе погоня
 ## перестаёт существовать как угроза.
 @export var sprint_mul: float = 1.9
+## Трусца в погоне: во сколько раз быстрее шага. Ставит мир, пока гонятся.
+var jog: float = 1.0
+var _jog_now: float = 1.0
+const JOG_MUL := 1.4
 @export var sprint_time: float = 10.0
 @export var sprint_cd: float = 20.0
-@export var eye_height: float = 1.62    ## в прототипе EYE=34 при стене 58 — то есть 0.59 высоты
+## ЭТО СМЕЩЕНИЕ ГОЛОВЫ ОТ ЦЕНТРА КАПСУЛЫ, А НЕ ВЫСОТА ГЛАЗА НАД ПОЛОМ.
+##
+## Здесь стояло 1.62 — число, взятое как «глаз на такой-то высоте». Но узел
+## игрока стоит ЦЕНТРОМ капсулы на 0.89, и 1.62 прибавлялись сверху: глаз
+## оказывался на 2.51. Всю игру человек ходил ростом под два шестьдесят.
+##
+## Замечено это было дважды и оба раза не как ошибка: тестер сказал «персонаж
+## в первой комнате огромен» — я поднял потолок; потом «дверной проём меньше
+## персонажа» — и проём в 2.25 при глазе на 2.53 действительно ниже глаз.
+## Ни разу никто не померил сам рост, хотя он виден в каждом кадре игры.
+##
+## Правильное значение выводится из констант ниже: EYE_Y − STAND_Y = 0.81.
+## Ровно столько и стоит в player.tscn у узла Head — сцена была права, а скрипт
+## перетирал её каждый кадр.
+@export var eye_height: float = 0.81
 
 # ─────────── камера ───────────
 ## Поворот с клавиатуры — основной способ для ноутбука без мыши, поэтому быстрый.
@@ -59,7 +77,38 @@ signal sprint_ended
 
 var yaw: float = 0.0
 var pitch: float = 0.0
+var look_calls: int = 0            ## сколько раз голову вели снаружи (для стенда)
+## РОСТ. Был 1.70 с глазом на 1.63 — взрослый человек. Друг, игравший впервые,
+## сказал про первую комнату: «персонаж огромен». По числам комната нормальная
+## (5.2 × 4.4 × 2.8, кровать взрослая 85 × 188), но потолок приходился в метре
+## с небольшим над глазами, а коридоры к тому времени я поднял до шести метров
+## — после них комната читается кукольной, а сам ты в ней великаном.
+##
+## Я тогда уменьшил его до 1.40 — и это было решение не то. Уменьшать человека,
+## чтобы комната стала ему впору, значит чинить следствие: в детской стоит
+## взрослая кровать 85 × 188, и подросток рядом с ней смотрелся бы так же
+## неправильно, только наоборот.
+##
+## Стало 1.78 — обычный взрослый рост, глаз на 1.70. Подгонять под него надо
+## КОМНАТУ, а не наоборот. Лабиринт при этом остаётся огромным: проход 4 метра,
+## потолок 6, то есть над головой всё равно четыре с лишним метра пустоты.
+##
+## Числа держим ЗДЕСЬ, а не россыпью по файлам: высота капсулы, её центр над
+## полом (он же точка постановки) и высота груди, куда целятся щупальца.
+const STAND: float = 1.78          ## полная высота капсулы
+const STAND_Y: float = 0.89        ## центр капсулы = куда ставить игрока
+const EYE_Y: float = 1.70          ## глаз над полом
+const CHEST_Y: float = 0.94        ## грудь: сюда бьют и сюда тянутся
+
 var quick_turn_left: float = 0.0        ## сколько радиан осталось довернуть по Q
+## ВЗГЛЯД ПО СЦЕНАРИЮ. Катсцены до этого не было чем поставить: в игре есть
+## только мышь и рывок по Q, а «персонаж всматривается в стену» — это когда
+## голову ведёт не игрок. Пока таймер идёт, мышь не слушается совсем: иначе
+## игрок инстинктивно дёрнет её в сторону ровно в тот кадр, на который
+## поставлен скример, и не увидит его.
+var look_hold: float = 0.0              ## сколько ещё вести голову по сценарию
+var look_at_w: Vector3 = Vector3.ZERO   ## куда вести
+var look_k: float = 6.0                 ## насколько резко доворачивать
 var noise: float = 0.0
 var noise_peak: float = 0.0
 var wall_touch: float = 0.0             ## сколько секунд подряд упираемся в камень
@@ -148,6 +197,8 @@ func _ensure_action(action: String, keys: Array, pad: Array = []) -> void:
 ## можно было прицелиться в точку на полотне, а полное — быстрый разворот, чтобы
 ## успеть обернуться на звук.
 func _pad_look(delta: float) -> void:
+	if look_hold > 0.0:
+		return
 	var v := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X),
 		Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y))
 	var l: float = v.length()
@@ -162,7 +213,8 @@ func _pad_look(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+			and look_hold <= 0.0:
 		# Приводим тип ЯВНО. У базового InputEvent нет поля relative, поэтому всё,
 		# что из него считано, для парсера — Variant, и вывести тип через := нельзя.
 		# После приведения relative становится честным Vector2 и всё выводится само.
@@ -199,7 +251,65 @@ func _physics_process(delta: float) -> void:
 		sprint_cool -= delta
 
 
+## Повести голову на точку и не отдавать управление, пока идёт сцена.
+func look_force(target: Vector3, seconds: float, sharp: float = 6.0) -> void:
+	look_at_w = target
+	look_hold = seconds
+	look_k = sharp
+
+
+## ВЕСТИ ГОЛОВУ, КОГДА ФИЗИКА ВЫКЛЮЧЕНА.
+##
+## look_force считается в _turn, то есть в физическом такте, — а на время
+## полотна игроку физику выключают (_freeze_player). Держать взгляд на холсте
+## было нечем: код в мире честно звал look_force каждый кадр, и он честно
+## ничего не делал. Голова оставалась там, куда игрок смотрел за миг до
+## открытия; стенд намерил отклонение 39°, то есть холст за краем кадра, и
+## снимок вышел чёрным. Сборка позы (_view) идёт в обычном такте, поэтому
+## достаточно двигать здесь yaw и pitch.
+func aim_head(target: Vector3, sharp: float, delta: float) -> void:
+	look_at_w = target
+	look_k = sharp
+	_look_scripted(delta)
+	# И СРАЗУ ПРИКЛАДЫВАЕМ К ТЕЛУ. Одного пересчёта yaw и pitch мало: в тело их
+	# переносит _view, а он зовётся только «когда камера наша», то есть при
+	# включённой физике. У рисующего физика выключена — считалось верно, а
+	# голова не поворачивалась ни на градус. Тот, кто ведёт голову сам, обязан
+	# сам её и повернуть.
+	look_calls += 1
+	rotation.y = yaw
+	if head != null:
+		head.rotation.x = pitch
+
+
+func _look_scripted(delta: float) -> void:
+	look_hold -= delta
+	# ГЛАЗ — ТАМ, ГДЕ ГОЛОВА. Здесь стояло «плюс 1.6 метра», а голова сидит на
+	# 0.81: всякий сценарный взгляд целился на 0.79 м выше настоящего глаза и
+	# потому проходил НИЖЕ цели. На холсте, до которого метр, это дало 38°
+	# промаха — лист уезжал за край кадра, и полотно в мире было не видно
+	# вовсе. Берём точку головы, а не выдуманную.
+	var head_w: Vector3 = head.global_position if head != null \
+		else global_position + Vector3.UP * 1.6
+	var to: Vector3 = look_at_w - head_w
+	if to.length_squared() < 0.0004:
+		return
+	# Цель по рысканью берём из плоской проекции, иначе у самой стены, где
+	# вектор смотрит почти вертикально вниз, рысканье начинает метаться.
+	var flat := Vector2(to.x, to.z)
+	if flat.length_squared() > 0.0004:
+		var want_yaw: float = atan2(-flat.x, -flat.y)
+		yaw = lerp_angle(yaw, want_yaw, clampf(look_k * delta, 0.0, 1.0))
+	var want_pitch: float = clampf(atan2(to.y, flat.length()),
+		deg_to_rad(-pitch_limit_deg), deg_to_rad(pitch_limit_deg))
+	pitch = lerpf(pitch, want_pitch, clampf(look_k * delta, 0.0, 1.0))
+
+
 func _turn(delta: float) -> void:
+	if look_hold > 0.0:
+		_look_scripted(delta)
+		rotation.y = yaw
+		return
 	_pad_look(delta)
 	var ts := turn_speed * (turn_boost if Input.is_action_pressed("run") else 1.0)
 	# Input.get_axis(отрицательное, положительное) даёт +1 при нажатии ВТОРОГО.
@@ -217,7 +327,12 @@ func _turn(delta: float) -> void:
 func _move(delta: float) -> void:
 	var input := Input.get_vector("left", "right", "forward", "back")
 	var dir := (transform.basis * Vector3(input.x, 0.0, input.y)).normalized()
-	var target := dir * (speed * sprint_mul if sprint_left > 0.0 else speed)
+	# БЕГ В ПОГОНЕ. Играющий (18.09): «за нами бежит монстр, жёсткий бит, а
+	# игрок просто идёт». Пока идёт погоня, мир ставит jog, и ноги сами
+	# переходят на трусцу — не быстрее рывка. Разгон плавный: переход с шага на
+	# бег должен ощущаться, а не щёлкать.
+	_jog_now = move_toward(_jog_now, jog, delta * 1.2)
+	var target := dir * (speed * sprint_mul if sprint_left > 0.0 else speed * _jog_now)
 	# Разгон, а не мгновенный старт: мгновенный читается как «скольжение по льду»
 	velocity.x = move_toward(velocity.x, target.x, accel * delta)
 	velocity.z = move_toward(velocity.z, target.z, accel * delta)
@@ -307,6 +422,15 @@ func _process(delta: float) -> void:
 	# не трогать чужое.
 	if is_physics_processing():
 		_view(delta)
+	# СЦЕНАРНЫЙ ВЗГЛЯД ПРИ ВЫКЛЮЧЕННОЙ ФИЗИКЕ. look_force считался только в
+	# _turn, то есть в физике, а все сцены, которым он нужен, игрока как раз
+	# замораживают: засада, лицо в стене, концовка. Голова туда просто не
+	# поворачивалась — в концовке тварь шла к тебе, а камера смотрела в дверь.
+	elif look_hold > 0.0:
+		_look_scripted(delta)
+		rotation.y = yaw
+		if head != null:
+			head.rotation.x = pitch
 
 
 func _update_noise(delta: float) -> void:

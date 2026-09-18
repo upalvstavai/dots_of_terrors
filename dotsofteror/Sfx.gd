@@ -30,6 +30,13 @@ const SQ_F1 := 165.0     ## частота в конце: падение вни�
 const SQ_DUR := 0.15     ## длительность, с. Больше 0.25 — уже хруст снега
 
 var _bank := {}
+## ЖУРНАЛ ДЛЯ СТЕНДА. Проверить «слышно ли монстра в погоне» на слух нельзя —
+## в headless звука нет вообще, а на слух не отличить 22% от 100%. Поэтому
+## каждый вызов можно записать: имя, громкость в децибелах и точку, откуда шёл.
+## По умолчанию выключено и не стоит ничего.
+var watch: bool = false
+var heard: Array = []
+var lost3d: int = 0                ## сколько звуков из точки не нашли места
 var _pool: Array[AudioStreamPlayer] = []
 var _pool3d: Array[AudioStreamPlayer3D] = []
 var _rng := RandomNumberGenerator.new()
@@ -47,6 +54,35 @@ var _mad_goal: float = 0.0
 ## понимает почему, но подбирается. Считаем секунды, пока фон придавлен.
 var _duck_t: float = 0.0
 var _box_player: AudioStreamPlayer      ## шкатулка в детской
+## МУЗЫКА ЛАБИРИНТА. Два слоя, оба зациклены и звучат ВСЕГДА.
+##
+## Нижний — спокойный: редкие щипки минорного трезвучия, нота раз в две
+## секунды. Он и есть «нормально в обычное время»: это музыка, а не гул
+## комнаты, но она ничего не обещает и никуда не зовёт.
+##
+## Верхний — напряжение: та же тональность, но с малой секундой и тритоном,
+## тянущимися без остановки. Он молчит, пока монстра нет рядом, и проступает
+## тем сильнее, чем он ближе. Два слоя в одной тональности не спорят: пока
+## верхний тих, слышна музыка; когда он громкий, та же музыка становится
+## невыносимой, не меняя ни одной ноты.
+##
+## Шкатулка остаётся при своём — она вещь в детской, а не музыка игры.
+var _mus_calm: AudioStreamPlayer
+var _mus_tense: AudioStreamPlayer
+var _mus_k: float = 0.0                 ## насколько близко он сейчас, 0..1
+var _stings := {}                       ## удары под события, напечены при запуске
+## БИТ ПОГОНИ. Отдельный зацикленный слой: он не «звучит в начале погони», он
+## звучит ВСЮ погоню. Громкость и скорость зависят от того, насколько близко он
+## за спиной, — значит бит сам по себе говорит, догоняет он или отстал.
+var _beat_player: AudioStreamPlayer
+var _beat_k: float = 0.0
+## ПЕРЕХВАТ ДЛЯ ЛАБОРАТОРИИ. Музыка и бит — не разовые звуки, а УРОВНИ: мир
+## задаёт их каждый кадр по расстоянию до монстра. Поэтому кнопка в
+## лаборатории срабатывала и тут же затиралась миром — он сказал прямо:
+## «удары работают, музыка и бит нет». Пока перехват включён, вызовы из мира
+## игнорируются, и уровень держит тот, кто его задал.
+var forced_mus: bool = false
+var forced_beat: bool = false
 var _box_now: float = 0.0
 var _box_goal: float = 0.0
 var _shard_player: AudioStreamPlayer    ## её обрывки в лабиринте
@@ -67,6 +103,31 @@ func _ready() -> void:
 	# Победа. Раньше её не было СОВСЕМ: единственный момент, ради которого игрок
 	# прошёл весь лабиринт, проходил в тишине.
 	_load_pack("win", "win", 2, func(r): return _tone(180.0 * r, 1.4, 0.6, "sine"))
+	# СОЕДИНЕНИЕ ТОЧКИ. Стук стекла, 0.3 с, один удар. Отбирался мерками, как и
+	# всё остальное: из пяти кандидатов пака только у него высоких на 6.7 дБ
+	# ниже общего — остальные шипят, а этот звук игрок услышит пятнадцать раз
+	# за одно полотно, и шипение на пятнадцатый раз становится пыткой.
+	#
+	# Синтез в запасе оставлен, но звучать он не должен: синтетические звуки в
+	# этой игре уже пробовали и забраковали.
+	# ШАГИ ПО СНЕГУ. Отдельный банк: мокрый хлюп из лабиринта на улице звучит
+	# нелепо, а снег — единственная поверхность в игре, у которой свой голос.
+	_load_pack("snow", "step_snow", 3, func(r): return _noise(0.16, 2200.0 * r, 0.5))
+	# РЕЗ ПО ЖИВОМУ. Два банка, и разница между ними — это разница между
+	# «задел» и «отрезал»: первый короткий и мокрый, второй длиннее и с низом.
+	# Без них хват озвучивался ударом и хлыстом, то есть звуками драки, а не
+	# звуками ножа в плоти.
+	_load_pack("slice", "slice", 3, func(r): return _noise(0.22, 1800.0 * r, 0.6))
+	_load_pack("sever", "sever", 3, func(r): return _noise(0.5, 900.0 * r, 0.8))
+	# ШАГИ ПО ДОСКАМ. Третья поверхность: улица — снег, лабиринт — грязь, дом —
+	# дерево. Без него в коридоре и детской стояла тишина, и она стала слышна
+	# ровно в тот день, когда снаружи появился хруст.
+	#
+	# Глухие: у записей 98 и 93 процента энергии ниже 500 Гц — это башмак по
+	# половице в жилом доме, а не костяшкой по фанере. Третья ярче и тише
+	# остальных на пять децибел: так и ходят, не каждый шаг одинаков.
+	_load_pack("wood", "step_wood", 3, func(r): return _noise(0.12, 900.0 * r, 0.6))
+	_load_pack("link", "link", 1, func(r): return _tone(660.0 * r, 0.12, 0.3, "sine"))
 	_bake("ok",    func(r): return _tone(380.0 * r, 0.12, 0.35, "sine"))
 	# Промах звучит МОКРО, а не пищит. Прямоугольная волна 210 Гц читалась как
 	# ошибка ввода в программе, а не как «полотно тебя не приняло».
@@ -80,9 +141,17 @@ func _ready() -> void:
 	# УДАР ПОИМКИ. Раньше тут пищал квадратный тон на 210 Гц — звук ошибки
 	# в меню, а не то, что тебя схватили. Настоящий удар состоит из трёх слоёв:
 	# щелчок сверху (резкость), рык в середине (мясо), провал внизу (вес).
-	_bake("hit_hi", func(r): return _noise(0.06, 7000.0 * r, 1.0, true))
+	# УДАР ТЕПЕРЬ НАСТОЯЩИЙ, А НЕ СИНТЕЗ.
+	#
+	# Из трёх полос удара записью была одна, средняя; верх был щелчком белого
+	# шума на шесть сотых секунды, низ — синтезированным «бумом». Вместе это
+	# давало жидкий хлопок, и играющий три раза подряд сказал одно: звуки
+	# резкой поимки слабые. Синтез остаётся запасным путём, если файлы
+	# потеряются, — но звучать должны записи.
+	_load_pack("hit_hi", "hit_hi", 3,
+		func(r): return _noise(0.06, 7000.0 * r, 1.0, true))
 	_load_pack("hit_mid", "hit_mid", 4, func(r): return _noise(0.45, 700.0 * r, 0.95))
-	_bake("hit_low", func(r): return _thump(r))
+	_load_pack("hit_low", "hit_low", 3, func(r): return _thump(r))
 	# Голос игрока. Синтезировать его я не взялся: подделка человеческого крика
 	# звучит хуже тишины. Это записи, CC0, источник в sfx/ИСТОЧНИК.txt.
 	_load_pack("scream", "scream", 3, func(r): return _noise(0.3, 900.0 * r, 0.8))
@@ -113,6 +182,31 @@ func _ready() -> void:
 	_air_player.stream = _air()
 	_air_player.volume_db = -60.0
 	add_child(_air_player)
+	# ЗАПИСИ, А НЕ СИНТЕЗ. Свои удары я делал дважды — «тихая нота пианино», а
+	# потом «БУМ» на синусах, — и оба раза выходило то, что он назвал фигнёй.
+	# Он прав: синтезом такое не делается. Здесь настоящие записи, сведённые
+	# слоями (резкий транзиент плюс опущенный на полторы октавы гонг), а
+	# синтез оставлен ровно на случай, когда файлов рядом нет: игра обязана
+	# запускаться из голых скриптов.
+	for pair in [["лицо", "sting_face"], ["угол", "sting_corner"],
+			["погоня", "sting_chase"]]:
+		var st = load("res://sfx/%s.wav" % pair[1])
+		_stings[pair[0]] = st if st is AudioStreamWAV else _sting(pair[0])
+	_beat_player = AudioStreamPlayer.new()
+	_beat_player.stream = _loop_file("beat_loop", func(): return _beat())
+	_beat_player.volume_db = -60.0
+	add_child(_beat_player)
+	_beat_player.play()
+	_mus_calm = AudioStreamPlayer.new()
+	_mus_calm.stream = _loop_file("mus_calm", func(): return _music_calm())
+	_mus_calm.volume_db = MUS_CALM
+	add_child(_mus_calm)
+	_mus_calm.play()
+	_mus_tense = AudioStreamPlayer.new()
+	_mus_tense.stream = _loop_file("mus_tense", func(): return _music_tense())
+	_mus_tense.volume_db = -60.0
+	add_child(_mus_tense)
+	_mus_tense.play()
 	_box_player = AudioStreamPlayer.new()
 	_box_player.stream = _music_box()
 	_box_player.volume_db = -60.0
@@ -125,10 +219,16 @@ func _ready() -> void:
 		var p := AudioStreamPlayer.new()
 		add_child(p)
 		_pool.append(p)
-	for i in 6:
+	# ВОСЕМЬ, А НЕ ШЕСТЬ: шаги теперь звучат постоянно, и шести мест не хватало —
+	# шаг вытеснял скрежет, скрежет вытеснял шаг.
+	for i in 8:
 		var p3 := AudioStreamPlayer3D.new()
 		p3.unit_size = 14.0
 		p3.max_distance = 40.0
+		# СТОРОНА ДОЛЖНА БЫТЬ СЛЫШНА. При обычной силе панорамы звук из точки
+		# читается «где-то рядом»; игра же держится на том, чтобы понять, с
+		# какой стороны он идёт, не видя его.
+		p3.panning_strength = 2.6
 		add_child(p3)
 		_pool3d.append(p3)
 	# Раскладка по шинам — ПОСЛЕ того, как все проигрыватели созданы.
@@ -163,12 +263,31 @@ func _make_buses() -> void:
 		AudioServer.add_bus(i)
 		AudioServer.set_bus_name(i, name)
 		AudioServer.set_bus_send(i, "Master")
+	# ОГРАНИЧИТЕЛЬ НА МАСТЕРЕ. Бит погони, музыка на пике и удар могут сойтись
+	# в одном кадре, и их сумма выйдет за шкалу. Цифровой перегруз звучит не
+	# как «громко», а как треск оборванного динамика — то есть громкость,
+	# которой он просил, обернулась бы браком. Ограничитель срезает вершины
+	# мягко и только когда они есть.
+	var m: int = AudioServer.get_bus_index("Master")
+	if m >= 0:
+		var has: bool = false
+		for e in AudioServer.get_bus_effect_count(m):
+			if AudioServer.get_bus_effect(m, e) is AudioEffectLimiter:
+				has = true
+				break
+		if not has:
+			var lim := AudioEffectLimiter.new()
+			lim.ceiling_db = -0.8
+			lim.threshold_db = -4.0
+			lim.soft_clip_db = 2.0
+			AudioServer.add_bus_effect(m, lim)
 
 
 ## Что считается музыкой: то, что звучит НОТАМИ. Шкатулка, её обрывки и тритон
 ## безумия — мотивы; гул, воздух, шаги и удары — мир, они на другой шине.
 func _route() -> void:
-	for pl in [_box_player, _shard_player, _mad_player]:
+	for pl in [_box_player, _shard_player, _mad_player, _mus_calm, _mus_tense,
+			_beat_player]:
 		if pl != null:
 			pl.bus = BUS_MUS
 	for pl in [_hum_player, _amb_player, _air_player]:
@@ -180,6 +299,17 @@ func _route() -> void:
 		pl.bus = BUS_SFX
 
 
+## ЧЕГО НЕ ХВАТИЛО В СБОРКЕ — ЗАПИСЫВАЕМ.
+##
+## Пак, у которого не нашлось файлов, молча подменялся синтезом: в редакторе
+## всё звучит записями, а в собранной игре — шипением, и разницы не видно
+## ниоткуда. Так уехала к игроку сборка, где шагов по снегу не было вовсе:
+## файлы лежали в проекте, но не попали в пакет, и банк собрался из шума.
+##
+## Теперь каждый такой случай остаётся в списке, а стенд его печатает.
+var synth_banks: Array[String] = []
+var short_banks: Array[String] = []
+
 func _load_pack(name: String, prefix: String, count: int, fallback: Callable) -> void:
 	var list: Array[AudioStreamWAV] = []
 	for i in range(1, count + 1):
@@ -188,8 +318,13 @@ func _load_pack(name: String, prefix: String, count: int, fallback: Callable) ->
 			list.append(st)
 	if list.is_empty():
 		push_warning("Записи '%s' не найдены, беру синтез" % name)
+		synth_banks.append(name)
 		_bake(name, fallback)
 	else:
+		if list.size() < count:
+			# Часть записей потерялась: банк работает, но вариантов меньше, чем
+			# задумано, и на ходьбе это слышно как повтор.
+			short_banks.append("%s (%d из %d)" % [name, list.size(), count])
 		_bank[name] = list
 
 
@@ -219,6 +354,8 @@ func _bake(name: String, maker: Callable) -> void:
 ## pitch: разброс по высоте, ±доля. Нужен, когда вариантов записи мало: три
 ## образца без разброса приедаются за минуту ходьбы, с разбросом — нет.
 func play(name: String, volume_db: float = 0.0, pitch: float = 0.0) -> void:
+	if watch:
+		heard.append({"имя": name, "дб": volume_db, "где": Vector3.ZERO, "из точки": false})
 	if not _bank.has(name):
 		return
 	for p in _pool:
@@ -230,8 +367,35 @@ func play(name: String, volume_db: float = 0.0, pitch: float = 0.0) -> void:
 			return
 
 
+## С ЗАДАННЫМ ТОНОМ. Третий параметр play() — разброс вокруг единицы, а не тон,
+## и пять вызовов в мире передавали туда тон: 0.55, 0.72, 0.92+… Разброс ±1.3
+## уводил pitch_scale в ноль и ниже — Godot ругался в логе, а звук соединения
+## точек то пищал, то пропадал. Здесь тон задаётся прямо, с лёгкой живостью.
+func play_tone(name: String, volume_db: float, tone: float) -> void:
+	if watch:
+		heard.append({"имя": name, "дб": volume_db, "где": Vector3.ZERO, "из точки": false})
+	if not _bank.has(name):
+		return
+	for p in _pool:
+		if not p.playing:
+			p.stream = _pick(name)
+			p.volume_db = volume_db
+			p.pitch_scale = maxf(0.05, tone * (1.0 + _rng.randf_range(-0.03, 0.03)))
+			p.play()
+			return
+
+
 ## Звук с местом в пространстве: по нему игрок понимает, с какой стороны скребёт.
-func play_at(name: String, pos: Vector3, volume_db: float = 0.0) -> void:
+## must — «этот звук пропасть не должен». Восьми мест в пространстве хватало,
+## пока тварь шумела раз в секунду; теперь у неё разом скрежет, опора восьми
+## рук о пол и своя поступь — четыре-пять звуков в секунду, и очередь
+## переполняется. Тихий шорох при этом молча вытеснял ШАГ, то есть ровно то
+## единственное, по чему игрок понимает, с какой стороны он идёт. Обязательный
+## звук забирает место у самого тихого из играющих.
+func play_at(name: String, pos: Vector3, volume_db: float = 0.0,
+		pitch: float = 1.0, must: bool = false) -> void:
+	if watch:
+		heard.append({"имя": name, "дб": volume_db, "где": pos, "из точки": true})
 	if not _bank.has(name):
 		return
 	for p in _pool3d:
@@ -239,8 +403,36 @@ func play_at(name: String, pos: Vector3, volume_db: float = 0.0) -> void:
 			p.stream = _pick(name)
 			p.global_position = pos
 			p.volume_db = volume_db
+			p.pitch_scale = pitch
 			p.play()
 			return
+	if not must:
+		lost3d += 1
+		return
+	var тихий: AudioStreamPlayer3D = null
+	for p in _pool3d:
+		if тихий == null or p.volume_db < тихий.volume_db:
+			тихий = p
+	if тихий == null or тихий.volume_db > volume_db:
+		lost3d += 1
+		return
+	тихий.stream = _pick(name)
+	тихий.global_position = pos
+	тихий.volume_db = volume_db
+	тихий.pitch_scale = pitch
+	тихий.play()
+
+
+## ШАГ ТВАРИ. Мокрый шлепок из точки, где он стоит, и под ним глухой низ:
+## тяжесть и сырость. Высота ниже обычной — он больше человека.
+func stomp(pos: Vector3, volume_db: float = 0.0) -> void:
+	# Отдельная отметка для стенда. Шаг собран из step_wet и hit_low, а те же
+	# два звука бьют ещё и от опоры руки о пол и от щупальца о стену: считать
+	# поступь по ним значит считать кашу. Первый замер на этом и обманулся.
+	if watch:
+		heard.append({"имя": "шаг", "дб": volume_db, "где": pos, "из точки": true})
+	play_at("step_wet", pos, volume_db, 0.55, true)
+	play_at("hit_low", pos, volume_db - 7.0, 0.7, true)
 
 
 ## ШЛЕПОК О КАМЕНЬ. Два слоя из места удара: вес толчка и мокрый хлюп massы.
@@ -349,6 +541,338 @@ func _music_box(pitch: float = 1.0, step: float = BOX_STEP,
 
 ## ОБРЫВОК. Три ноты из той же восьмёрки, ниже на треть и втрое медленнее.
 ## В лабиринте узнаётся не мелодия, а её испорченность.
+## Громкость спокойного слоя. Тише всего прочего нарочно: музыка, которую
+## замечаешь, перестаёт быть фоном и начинает мешать слушать камень.
+## ГРОМЧЕ. Первая версия была −19 и −11: он послушал и сказал «тихо». Музыку,
+## которой не слышно, можно было и не писать.
+const MUS_CALM := -12.0
+const MUS_TENSE_MAX := -3.0
+## Длина петли. Восемь секунд — это четыре щипка; короче слышен стык, длиннее
+## незачем: музыку здесь никто не слушает целиком.
+const MUS_LOOP := 8.0
+
+## СПОКОЙНЫЙ СЛОЙ. Ля минор, щипки с длинным затуханием, нота раз в две
+## секунды, плюс еле слышная выдержанная основа. Ноты берутся по кругу, но
+## разной громкости — иначе за три петли рисунок выучивается наизусть.
+func _music_calm() -> AudioStreamWAV:
+	var n := int(RATE * MUS_LOOP)
+	var buf := PackedFloat32Array()
+	buf.resize(n)
+	var notes := [110.0, 164.81, 130.81, 220.0]      # ля, ми, до, ля
+	var gains := [0.9, 0.62, 0.78, 0.44]
+	for k in notes.size():
+		var f: float = float(notes[k])
+		var at: int = int(RATE * 2.0 * float(k))
+		var len_i: int = int(RATE * 2.6)
+		for i in len_i:
+			var idx: int = at + i
+			if idx >= n:
+				break
+			var t: float = float(i) / float(RATE)
+			# Затухание быстрое в начале и длинный хвост: так звучит струна,
+			# а не орган.
+			var env: float = exp(-t * 1.7)
+			var v: float = sin(t * f * TAU) * 0.62 \
+				+ sin(t * f * 2.0 * TAU) * 0.20 \
+				+ sin(t * f * 3.0 * TAU) * 0.08
+			buf[idx] += v * env * float(gains[k]) * 0.30
+	# Основа: выдержанное ля, почти неслышное. Оно склеивает щипки в музыку.
+	for i in n:
+		var t2: float = float(i) / float(RATE)
+		buf[i] += sin(t2 * 55.0 * TAU) * 0.10 + sin(t2 * 55.3 * TAU) * 0.07
+	return _from_float(buf, n)
+
+
+## СЛОЙ НАПРЯЖЕНИЯ. Та же тональность — и малая секунда к основе. Два тона в
+## полутоне друг от друга бьются с частотой их разности: чем громче слой, тем
+## заметнее это биение, и оно читается как «что-то не так», а не как «играет
+## страшная музыка».
+func _music_tense() -> AudioStreamWAV:
+	var n := int(RATE * MUS_LOOP)
+	var buf := PackedFloat32Array()
+	buf.resize(n)
+	for i in n:
+		var t: float = float(i) / float(RATE)
+		# 110 и 116.54 — малая секунда; 155.56 сверху — тритон, он и делает
+		# созвучие нерешаемым.
+		var v: float = sin(t * 110.0 * TAU) * 0.34 \
+			+ sin(t * 116.54 * TAU) * 0.30 \
+			+ sin(t * 155.56 * TAU) * 0.18 \
+			+ sin(t * 233.08 * TAU) * 0.10
+		# Медленное дыхание громкости: ровный тон ухо перестаёт слышать за
+		# полминуты, а качающийся — нет.
+		var breathe: float = 0.72 + 0.28 * sin(t * 0.37 * TAU)
+		buf[i] = v * breathe * 0.5
+	return _from_float(buf, n)
+
+
+## Собрать зацикленный WAV из плавающей буферизации, с защитой от перегруза.
+func _from_float(buf: PackedFloat32Array, n: int) -> AudioStreamWAV:
+	var peak: float = 0.0
+	for i in n:
+		peak = maxf(peak, absf(buf[i]))
+	var k: float = 1.0 if peak < 0.001 else minf(1.0, 0.92 / peak)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		data.encode_s16(i * 2, int(clampf(buf[i] * k, -1.0, 1.0) * 32767.0))
+	var w := _wav(data)
+	w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	w.loop_begin = 0
+	w.loop_end = n
+	return w
+
+
+## БЛИЗОСТЬ, 0..1. Мир зовёт это каждый кадр; здесь только сглаживание, чтобы
+## музыка не дёргалась, когда монстр мелькнул за углом и пропал.
+func music_near(k: float, delta: float) -> void:
+	if forced_mus:
+		return
+	var want: float = clampf(k, 0.0, 1.0)
+	# Вверх быстрее, чем вниз: подкрадывание должно быть слышно сразу, а отпускать
+	# надо медленно — иначе «он ушёл» звучит как выключенный приёмник.
+	var sp: float = 2.2 if want > _mus_k else 0.45
+	_mus_k = move_toward(_mus_k, want, delta * sp)
+	if _mus_tense != null:
+		_mus_tense.volume_db = lerpf(-60.0, MUS_TENSE_MAX, _mus_k) \
+			if _mus_k > 0.02 else -60.0
+		# И выше по тону: к самому близкому расстоянию созвучие ползёт вверх
+		# на полтора полутона. Слух не назовёт это, но напряжётся.
+		_mus_tense.pitch_scale = 1.0 + _mus_k * 0.09
+	if _mus_calm != null:
+		# Спокойный слой при этом ПРИГЛУШАЕТСЯ: музыка уступает место тому,
+		# что важнее, а не соревнуется с ним.
+		_mus_calm.volume_db = MUS_CALM - _mus_k * 9.0
+
+
+## УДАРЫ ПОД СОБЫТИЯ. Три момента, ради которых игра и существует, до сих пор
+## озвучивались тем же, чем всё остальное: крик, хлыст, скрежет. Это работает
+## как «что-то случилось» и не работает как «случилось ИМЕННО ЭТО».
+##
+## Делаем их в той же тональности, что музыка (ля), — тогда удар не звучит
+## приклеенным поверх, он звучит как то, во что музыка сорвалась.
+##
+## Заводим один раз при запуске и держим в банке: печь такое на лету — это
+## полсекунды тишины ровно там, где нужен удар.
+func _sting(kind: String) -> AudioStreamWAV:
+	# БУМ, А НЕ НОТА. Первая версия была построена как аккорд с затуханием —
+	# музыкально и совершенно не страшно: «тихая нота пианино», как он и сказал.
+	# Удар пугает не высотой и не громкостью, а ДВУМЯ вещами: мгновенной атакой
+	# (первые двадцать миллисекунд — щелчок и широкополосный шум) и массой в
+	# низу, которая уезжает ещё ниже.
+	#
+	# И перегрузом. Чистая синусоида даже на полной шкале звучит мягко; то, что
+	# ухо зовёт «жёстким», — это срезанная вершина, то есть добавленные
+	# гармоники. Поэтому в конце всё прогоняется через ограничение с запасом.
+	var dur: float = 2.6 if kind == "лицо" else (2.2 if kind == "угол" else 1.6)
+	var n := int(RATE * dur)
+	var buf := PackedFloat32Array()
+	buf.resize(n)
+	# Низ, с которого начинается падение, и во сколько раз он падает.
+	var f0: float = 150.0 if kind == "лицо" else 110.0
+	var drive: float = 3.4 if kind == "лицо" else 2.8
+	for i in n:
+		var t: float = float(i) / float(RATE)
+		# Скольжение вниз: экспонентой, а не прямой — так падает всё тяжёлое.
+		var f: float = f0 * exp(-t * 2.1) + 26.0
+		var ph: float = f * t
+		var v: float = sin(ph * TAU) * 0.95 + sin(ph * 0.5 * TAU) * 0.55
+		# УДАРНАЯ ЧАСТЬ. Двадцать миллисекунд шума во всю ширину: именно она
+		# читается как «бум», а не как «загудело».
+		if t < 0.022:
+			var e: float = 1.0 - t / 0.022
+			v += (randf() * 2.0 - 1.0) * 1.5 * e * e
+		# Металлический призвук сверху, короткий: он даёт удару край.
+		if t < 0.30:
+			var e2: float = exp(-t * 16.0)
+			v += (sin(t * 1870.0 * TAU) * 0.5 + sin(t * 2490.0 * TAU) * 0.35) * e2 * 0.6
+		if kind == "лицо":
+			# Крик струн: три тона в полутоне, скользящие вниз вместе с низом.
+			var sl: float = 1.0 - t * 0.18
+			var e3: float = exp(-t * 2.6)
+			v += (sin(t * 440.0 * sl * TAU) + sin(t * 466.16 * sl * TAU)
+				+ sin(t * 493.88 * sl * TAU)) * 0.22 * e3
+		var env: float = exp(-t * (1.5 if kind == "лицо" else 1.9))
+		buf[i] = clampf(v * env * drive, -1.0, 1.0)
+	return _from_float_flat(buf, n)
+
+
+## Взять запись и зациклить её. Петля задаётся ЗДЕСЬ, а не в настройках
+## импорта: файл может прийти из архива без .import рядом, и тогда настройка
+## потеряется молча — музыка сыграет один раз и замолчит.
+func _loop_file(name: String, fallback: Callable) -> AudioStreamWAV:
+	var st = load("res://sfx/%s.wav" % name)
+	if not (st is AudioStreamWAV):
+		push_warning("Запись '%s' не найдена, беру синтез" % name)
+		return fallback.call()
+	var w: AudioStreamWAV = st
+	# КОНЕЦ ПЕТЛИ ЗАДАЁМ ВСЕГДА И САМИ.
+	#
+	# В .import стоит edit/loop_mode=1 и edit/loop_end=-1, и я решил, что этого
+	# хватит. Не хватило: в движок это приходит как режим «вперёд» и конец
+	# НОЛЬ, то есть петля нулевой длины. Godot такую не играет вообще —
+	# проигрыватель молчит, play() не запускается даже повторно, а громкость
+	# при этом послушно меняется. Поэтому всё выглядело исправным: я мерил
+	# уровни у того, что не звучало ни секунды.
+	#
+	# Считаем конец от самих данных. Это верно, потому что эти файлы
+	# импортируются без сжатия (compress/mode=0) — тот же режим, что у всех
+	# остальных записей проекта.
+	var bytes: int = 2 if w.format == AudioStreamWAV.FORMAT_16_BITS else 1
+	var chans: int = 2 if w.stereo else 1
+	w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	w.loop_begin = 0
+	w.loop_end = w.data.size() / (bytes * chans)
+	return w
+
+
+## БИТ ПОГОНИ. Не удар, а ПЕТЛЯ: пока он гонится, это должно долбить всё
+## время, а не звякнуть один раз в начале. Четыре доли на два такта, бочка на
+## каждой, между ними подбой — тот самый «жёсткий бит», который и напрягает,
+## и гонит вперёд.
+##
+## Темп выбран быстрее пульса покоя и медленнее паники: 140 ударов в минуту.
+## Ровно на этой границе тело начинает подстраиваться под звук.
+func _beat() -> AudioStreamWAV:
+	var bpm: float = 140.0
+	var beat: float = 60.0 / bpm
+	var bars: int = 2
+	var dur: float = beat * 4.0 * float(bars)
+	var n := int(RATE * dur)
+	var buf := PackedFloat32Array()
+	buf.resize(n)
+	var beats: int = 4 * bars
+	for b in beats:
+		var at: int = int(float(b) * beat * RATE)
+		# БОЧКА. Синус, падающий с 95 до 40 Гц за сто миллисекунд.
+		for i in int(RATE * 0.34):
+			var idx: int = at + i
+			if idx >= n:
+				break
+			var t: float = float(i) / float(RATE)
+			var f: float = 95.0 * exp(-t * 22.0) + 40.0
+			var e: float = exp(-t * 9.0)
+			var v: float = sin(f * t * TAU) * 1.2
+			if t < 0.006:
+				v += (randf() * 2.0 - 1.0) * 0.9 * (1.0 - t / 0.006)
+			buf[idx] += v * e
+		# ПОДБОЙ между долями: сухой шум, тише бочки вдвое.
+		var at2: int = at + int(beat * 0.5 * RATE)
+		for i2 in int(RATE * 0.09):
+			var idx2: int = at2 + i2
+			if idx2 >= n:
+				break
+			var t2: float = float(i2) / float(RATE)
+			buf[idx2] += (randf() * 2.0 - 1.0) * 0.5 * exp(-t2 * 46.0)
+	# Низкий гул под всем этим: он склеивает удары в бег, а не в метроном.
+	for i3 in n:
+		var t3: float = float(i3) / float(RATE)
+		buf[i3] += sin(t3 * 55.0 * TAU) * 0.22 + sin(t3 * 82.41 * TAU) * 0.12
+	for i4 in n:
+		buf[i4] = clampf(buf[i4] * 1.35, -1.0, 1.0)
+	return _from_float_flat(buf, n)
+
+
+## Как _from_float, но БЕЗ выравнивания по пику: ударам и биту громкость уже
+## задана в самом расчёте, и нормировка их только пригасит.
+func _from_float_flat(buf: PackedFloat32Array, n: int) -> AudioStreamWAV:
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		data.encode_s16(i * 2, int(clampf(buf[i], -1.0, 1.0) * 32767.0))
+	var w := _wav(data)
+	w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	w.loop_begin = 0
+	w.loop_end = n
+	return w
+
+
+## БИТ: включён или нет, и насколько близко он за спиной (0..1).
+##
+## Нарастание почти мгновенное — погоня начинается рывком, и бит должен
+## успеть за ней. Спад медленный: когда он отстал, напряжение отпускает не
+## сразу, и это правда о том, как это переживается.
+const BEAT_MAX := -4.0
+
+## Звучит ли сейчас бит погони. Нужно стенду: «погоня не прервалась» — это
+## утверждение о звуке, и проверять его надо по звуку, а не по флагам мира.
+func beat_on() -> bool:
+	return _beat_k > 0.05
+
+
+func beat_level(on: bool, near: float, delta: float) -> void:
+	if _beat_player == null or forced_beat:
+		return
+	var want: float = clampf(near, 0.0, 1.0) if on else 0.0
+	var sp: float = 5.0 if want > _beat_k else 0.7
+	_beat_k = move_toward(_beat_k, want, delta * sp)
+	if _beat_k <= 0.02:
+		_beat_player.volume_db = -60.0
+		return
+	# Громкость идёт от нуля близости, но НЕ до нуля громкости: если он гонится,
+	# бит слышен всегда, просто далеко — глуше.
+	_beat_player.volume_db = lerpf(-17.0, BEAT_MAX, _beat_k)
+	# И БЫСТРЕЕ, когда ближе: от 140 ударов в минуту до 168. Темп подгоняет
+	# сильнее громкости — по нему слышно, что расстояние сокращается.
+	_beat_player.pitch_scale = 1.0 + _beat_k * 0.20
+
+
+## Задать уровень насильно и не отдавать его миру. Отрицательное значение
+## снимает перехват и возвращает управление игре.
+func music_force(k: float) -> void:
+	forced_mus = k >= 0.0
+	if not forced_mus:
+		return
+	_mus_k = clampf(k, 0.0, 1.0)
+	if _mus_tense != null:
+		_mus_tense.volume_db = lerpf(-60.0, MUS_TENSE_MAX, _mus_k) \
+			if _mus_k > 0.02 else -60.0
+		_mus_tense.pitch_scale = 1.0 + _mus_k * 0.09
+	if _mus_calm != null:
+		_mus_calm.volume_db = MUS_CALM - _mus_k * 9.0
+
+
+func beat_force(k: float) -> void:
+	forced_beat = k >= 0.0
+	if _beat_player == null:
+		return
+	if not forced_beat:
+		return
+	_beat_k = clampf(k, 0.0, 1.0)
+	if _beat_k <= 0.02:
+		_beat_player.volume_db = -60.0
+		return
+	_beat_player.volume_db = lerpf(-17.0, BEAT_MAX, _beat_k)
+	_beat_player.pitch_scale = 1.0 + _beat_k * 0.20
+
+
+## ОБОРВАТЬ ВСЁ РАЗОВОЕ. Петли (музыка, бит, воздух) не трогаем — они фон.
+## Нужно лаборатории: там жмут кнопки подряд, звуки ложатся друг на друга и
+## каша выдаётся за поломку. В игре это не зовут: там наложение — правда.
+func hush() -> void:
+	for pl in _pool:
+		pl.stop()
+	for pl in _pool3d:
+		pl.stop()
+
+
+## Сыграть удар. Имена русские нарочно: их зовут из мира, где всё остальное
+## тоже по-русски, и «sting_face» среди них читается как чужая строка.
+func sting(kind: String, volume_db: float = 0.0) -> void:
+	if watch:
+		heard.append({"имя": "удар:" + kind, "дб": volume_db,
+			"где": Vector3.ZERO, "из точки": false})
+	if not _stings.has(kind):
+		return
+	for pl in _pool:
+		if not pl.playing:
+			pl.stream = _stings[kind]
+			pl.volume_db = volume_db
+			pl.pitch_scale = 1.0
+			pl.play()
+			return
+
+
 func _box_shard() -> AudioStreamWAV:
 	var n := int(RATE * 4.2)
 	var data := PackedByteArray()
@@ -680,7 +1204,10 @@ func _process(delta: float) -> void:
 		else:
 			if not _box_player.playing:
 				_box_player.play()
-			_box_player.volume_db = lerpf(-34.0, -13.0, _box_now)
+			# ГРОМЧЕ МУЗЫКИ, А НЕ ПОД НЕЙ. Шкала была −34…−13 дБ, а спокойная
+			# музыка идёт на −12: шкатулку на −29 (фон) и −26 (тварь рядом)
+			# не слышал никто и никогда — «шкатулки не слышно» (18.09).
+			_box_player.volume_db = lerpf(-30.0, -8.0, _box_now)
 	_mad_now = move_toward(_mad_now, _mad_goal, delta * 0.25)
 	if _mad_now <= 0.002:
 		if _mad_player.playing:

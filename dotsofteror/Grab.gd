@@ -5,8 +5,39 @@ extends Control
 ## с краёв экрана к лицу тянутся щупальца, и отпускают они не по таймеру,
 ## а от твоих нажатий.
 
+const UI := preload("res://UI.gd")
+## Живучесть щупальца — одна на две стороны: режут в Grab3D, считают здесь.
+const Grab3DScript := preload("res://Grab3D.gd")
+
 signal escaped
 signal failed
+signal cut_one(left: int)      ## перерезал одно щупальце: миру — звук и отдача
+signal nicked                  ## попал, но не дорезал: щупальце только надрублено
+
+## НОЖ ВМЕСТО ДОЛБЁЖКИ.
+##
+## Раньше из хвата выдирались нажатиями на пробел: семнадцать раз за четыре
+## секунды. Это был не поступок, а проверка на скорость пальца, и объяснить,
+## почему тварь после этого отлетает, было нечем.
+##
+## Теперь палочка в руке становится лезвием — тем же, что видно в кадре, — и
+## щупальца надо ПЕРЕРЕЗАТЬ. Каждое режется отдельным взмахом: ведёшь мышью
+## поперёк петли, и она расходится. Отсюда и отдача: он отшатывается не от
+## того, что ты быстро постучал, а от того, что ты его резал.
+const KNIFE_SENS := 1.35       ## во сколько раз нож быстрее курсора
+const CUT_MIN := 22.0          ## короче этого взмах не считается взмахом
+const CUT_NEAR := 30.0         ## на таком расстоянии лезвие достаёт до петли
+const CUT_LOCK := 0.14         ## пауза между разрезами: одним махом не выкосить
+## СКОЛЬКО РАЗ ПО ОДНОМУ ЩУПАЛЬЦУ. Само число живёт в Grab3D — там режут, —
+## здесь оно нужно только для полоски и для того, насколько слабеет хватка.
+##
+## Было два взмаха на щупальце и три-пять щупалец: шесть-десять движений за
+## окно. Играющий сказал, чем это оказалось: «пара взмахов ножом и готово, не
+## страшно и не опасно». Теперь три взмаха и четыре-шесть щупалец — двенадцать
+## восемнадцать движений, и надруб зарастает, если бросить щупальце
+## недорезанным. Работы втрое, а попадать не стало труднее ни на палец: резать
+## интересно, значит резать и надо дольше.
+const ARM_HP := Grab3DScript.ARM_HP
 
 ## Два ТИПА захвата. Один требует долбить пробел, другой — НЕ трогать ничего.
 ## Пока требование одно, руки делают его сами: хват читается не как опасность,
@@ -26,24 +57,42 @@ signal failed
 ## и 5.8 на самой злой карте. Быстро, но выполнимо.
 const NEED_BASE := 17
 const NEED_PER_STAGE := 2
-const TIME := 4.0
+## ПЯТЬ С ПОЛОВИНОЙ, А НЕ ЧЕТЫРЕ. Резать мышью ощутимо дольше, чем долбить
+## пробел: четырёх секунд на восемь взмахов хватало только тем, кто машет раз в
+## треть секунды. Замер по трём темпам показал, что обычный игрок не проходил
+## ни второй хват, ни третий — а должен проходить первые два и спотыкаться на
+## третьем.
+const TIME := 2.4
+## И СТОЛЬКО НА КАЖДОЕ ЩУПАЛЬЦЕ. Три взмаха обычным темпом — это около полутора
+## секунд чистой работы; даём 1.35 и тем самым требуем не мешкать.
+const TIME_PER_ARM := 1.35
+## ПОТОЛОК СТАВКИ. В третьей фазе окно короче (мир передаёт rush), а безумие к
+## тому времени обычно уже высокое — и эти два множителя, встретившись, дают
+## ставку, которую не берёт никто. Поэтому число нажатий здесь урезается под
+## окно: быстрее — да, невозможно — нет.
+const HUMAN_MAX := 6.2
 
 var count: int = 0
 var need: int = NEED_BASE
 var time_left: float = 0.0
+var window: float = TIME       ## сколько было дано с самого начала: окно меняется
 var grip: float = 0.55
-var arms: Array = []
 ## Значение по умолчанию — на случай, если окно откроют без текста; настоящую
 ## строку всегда передаёт мир, и она уже переведена.
 var label: String = "ЖМИ ПРОБЕЛ! ВЫРЫВАЙСЯ!"
 var t: float = 0.0
 var _rng := RandomNumberGenerator.new()
 var vign: ColorRect
-## Рисовать ли петли. Когда держит САМ МОНСТР, вокруг тебя уже сомкнулись его
-## настоящие руки — трёхмерные, с той стороны экрана. Дорисовывать поверх них
-## плоскую спираль незачем: именно она и читалась как «спираль перед экраном».
-## Петли остаются для щупалец из стен, где никакого тела рядом нет.
+## Держит ли САМ МОНСТР. Плоский слой этим больше не рисует ничего — щупальца
+## живут в Grab3D, — но мир по-прежнему различает хват твари и щупальце из
+## стены, и поле остаётся: по нему выбирается громкость и число петель.
 var coils: bool = true
+var knife: Vector2 = Vector2.ZERO
+var knife_prev: Vector2 = Vector2.ZERO
+var cut_lock: float = 0.0
+var cuts: int = 0
+var hits: int = 0              ## всего попаданий: по ним и рисуется полоска
+var scene3d                    ## Grab3D: щупальца и нож в пространстве
 
 
 ## С рождения узел НЕ СЧИТАЕТ. Godot включает _process всем, у кого есть такой
@@ -65,37 +114,63 @@ func _ready() -> void:
 	set_process(false)
 
 
-func begin(text: String, loud: bool, seed_value: int, stage: int = 0) -> void:
+func begin(text: String, loud: bool, seed_value: int, stage: int = 0,
+		rush: float = 1.0) -> void:
 	_rng.seed = seed_value
-	need = NEED_BASE + stage * NEED_PER_STAGE
 	label = text
 	count = 0
-	time_left = TIME
+	cuts = 0
+	hits = 0
+	cut_lock = 0.0
+	# СРОК СЧИТАЕТСЯ ОТ РАБОТЫ, А НЕ ЗАДАН ЧИСЛОМ. Пока щупалец было три-пять,
+	# одно окно на всех ещё сходилось; при четырёх-шести по три взмаха разница
+	# между лёгким и злым хватом — шесть движений, и фиксированные пять с
+	# половиной секунд означали бы «первый хват даром, последний невозможен».
+	window = (TIME + TIME_PER_ARM * float(need)) * clampf(rush, 0.5, 1.0)
+	# ПЛЮС РОСТ ЛЕЗВИЯ. Пока палочка перетекает в сталь, резать нечем — и эти
+	# полсекунды честно уходили из окна: обычный игрок вырывался 2 раза из 6
+	# вместо прежних 5. Драка начинается тогда, когда в руке есть нож, значит и
+	# срок ей надо считать оттуда.
+	window += Grab3DScript.BLADE_GROW
+	# ЧИСЛО ЩУПАЛЕЦ — ВОТ ЧТО ТЕПЕРЬ МЕРА. Их четыре, плюс одно на громком
+	# хвате и по одному за каждую стадию безумия. Срок при этом режет мир
+	# (rush): второй хват в одной погоне даёт меньше времени на то же число
+	# петель, третий — ещё меньше.
+	# ТРИ ЩУПАЛЬЦА ПО ДВА ВЗМАХА, А НЕ ЧЕТЫРЕ. Шесть движений вместо восьми:
+	# при восьми медленный игрок не проходил даже ПЕРВЫЙ хват ни разу из пяти,
+	# то есть умирал в каждой погоне. Стадии безумия добавляют щупальца, и там
+	# работы снова становится больше — но к тому времени игрок уже умеет.
+	need = clampi(3 + stage + (1 if loud else 0), 4, 6)
+	time_left = window
 	grip = 0.55
 	t = 0.0
-	_make_arms(5 if loud else 4)
+	knife = size * 0.5
+	knife_prev = knife
 	visible = true
 	set_process(true)
+	set_process_input(true)
 
-
-func _make_arms(n: int) -> void:
-	arms.clear()
-	for i in n:
-		# корни разбросаны по периметру, но не строго равномерно — иначе читается как узор
-		var u: float = (float(i) + 0.5) / float(n) + (_rng.randf() - 0.5) * 0.09
-		arms.append({"u": u, "seed": _rng.randf() * 99.0, "w": 8.0 + _rng.randf() * 7.0,
-			"curl": 1.0 if _rng.randf() < 0.5 else -1.0, "lead": 0.78 + _rng.randf() * 0.44})
 
 
 func _process(delta: float) -> void:
 	t += delta
 	time_left -= delta
-	# ОТПУСКАНИЕ НЕЛИНЕЙНОЕ (степень 1.7). При линейном щупальца слетали с лица
-	# за первые же нажатия — борьба кончалась раньше, чем игрок успевал её увидеть.
-	# Теперь держат почти до конца и срываются на последних ударах.
-	var relief: float = 0.95 * pow(clampf(float(count) / float(need), 0.0, 1.0), 1.7)
-	grip = clampf(0.55 + 0.80 * (1.0 - time_left / TIME) - relief, 0.0, 1.0)
-	if count >= need:
+	cut_lock = maxf(0.0, cut_lock - delta)
+	if scene3d != null:
+		# ГЕЙМПАД. Ножом водят правым стиком — там, где мышью водят рукой.
+		var gx: float = Input.get_joy_axis(0, JOY_AXIS_RIGHT_X)
+		var gy: float = Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y)
+		if absf(gx) > 0.2 or absf(gy) > 0.2:
+			scene3d.aim_by(Vector2(gx, gy) * delta * 2.6)
+		scene3d.tick(delta, grip)
+		if cut_lock <= 0.0:
+			if scene3d.try_cut(delta) >= 0:
+				cut_lock = CUT_LOCK
+	# Хватка слабеет от КАЖДОГО перерезанного щупальца, а не от нажатий.
+	var relief: float = 0.95 * pow(
+		clampf(float(hits) / float(need * ARM_HP), 0.0, 1.0), 1.4)
+	grip = clampf(0.55 + 0.80 * (1.0 - time_left / window) - relief, 0.0, 1.0)
+	if cuts >= need:
 		_end(true)
 	elif time_left <= 0.0:
 		_end(false)
@@ -105,6 +180,33 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
+## МЫШЬ ВЕДЁТ НОЖ, А НЕ КАМЕРУ. Событие помечаем разобранным, иначе тем же
+## движением игрок крутил бы головой: _unhandled_input игрока стоит ПОСЛЕ
+## нашего _input и до него это движение теперь не доходит.
+##
+## Сам нож и щупальца живут в пространстве — см. Grab3D.gd. Здесь остались
+## только счёт, срок и надписи: плоскому слою больше нечего рисовать, кроме
+## них и виньетки.
+func _input(event: InputEvent) -> void:
+	if not visible or scene3d == null:
+		return
+	if event is InputEventMouseMotion:
+		var mm := event as InputEventMouseMotion
+		# Доли экрана, а не пиксели: на любом разрешении рука ходит одинаково.
+		scene3d.aim_by(Vector2(mm.relative.x, mm.relative.y) * KNIFE_SENS
+			/ maxf(size.x, 1.0) * 2.4)
+		get_viewport().set_input_as_handled()
+
+
+## ДЛЯ СТЕНДА. Бот мышью не водит, а проверять хват надо тем же кодом, что и у
+## игрока: Grab3D строит настоящий взмах поперёк ближайшего целого щупальца и
+## прогоняет его через ту же проверку попадания в пространстве.
+func bot_slash() -> bool:
+	if scene3d == null:
+		return false
+	return scene3d.bot_slash()
+
+
 func press() -> void:
 	count += 1
 
@@ -112,25 +214,12 @@ func press() -> void:
 func _end(ok: bool) -> void:
 	visible = false
 	set_process(false)
+	if scene3d != null:
+		scene3d.finish()
 	if ok:
 		escaped.emit()
 	else:
 		failed.emit()
-
-
-func _edge(u: float) -> Vector2:
-	var per: float = 2.0 * (size.x + size.y)
-	var d: float = fposmod(u, 1.0) * per
-	if d < size.x:
-		return Vector2(d, 0)
-	d -= size.x
-	if d < size.y:
-		return Vector2(size.x, d)
-	d -= size.y
-	if d < size.x:
-		return Vector2(size.x - d, size.y)
-	d -= size.x
-	return Vector2(0, size.y - d)
 
 
 func _draw() -> void:
@@ -141,42 +230,14 @@ func _draw() -> void:
 	# экрана — со стороны это читалось как «его язык лижет камеру». Тебя не лижут,
 	# тебя ОБВИВАЮТ: каждая петля идёт по спирали вокруг обзора и с каждой
 	# секундой затягивается ближе к лицу.
-	var base: float = minf(size.x, size.y)
-	for a in (arms if coils else []):
-		var seed_a: float = float(a["seed"])
-		var turn: float = float(a["u"]) * TAU
-		# Кольцо сжимается вместе с хваткой. Это и есть весь показатель:
-		# видно, сколько тебе осталось, не глядя на полоску.
-		var r0: float = base * (0.74 - 0.34 * grip) * float(a["lead"])
-		var pts := PackedVector2Array()
-		var n := 30
-		for k in n + 1:
-			var u: float = float(k) / float(n)
-			# Три четверти оборота на петлю, с сужением к хвосту: полный круг
-			# читался бы обручем, а не змеёй.
-			var th: float = turn + u * TAU * 0.78 * float(a["curl"])
-			var wob: float = 1.0 + sin(t * 2.6 + seed_a + u * 6.5) * 0.10
-			var rr: float = r0 * (1.0 - u * 0.26) * wob
-			pts.append(c + Vector2(cos(th) * rr, sin(th) * rr * 0.74))
-		for k in n:
-			var taper: float = (1.0 - float(k) / float(n) * 0.75)
-			# ТОЛЩЕ. На тонких линиях это читалось мотком проволоки, а не телами,
-			# которые тебя обвивают.
-			var th2: float = float(a["w"]) * 2.1 * taper * (0.60 + 0.70 * grip)
-			draw_line(pts[k], pts[k + 1], Color(0.74, 0.73, 0.70, 0.45 + 0.45 * grip), th2)
-			draw_line(pts[k], pts[k + 1], Color(0.02, 0.03, 0.04, 0.78),
-				maxf(1.0, th2 * 0.45))
-		# Присоски по телу петли: без них это шланг, а не живое.
-		for k in range(2, n, 3):
-			var rr2: float = maxf(1.5, float(a["w"]) * 0.55
-				* (1.0 - float(k) / float(n) * 0.75))
-			draw_circle(pts[k], rr2, Color(0.91, 0.89, 0.85, 0.16 + 0.42 * grip))
-
-	var f := ThemeDB.fallback_font
+	# ПЕТЕЛЬ ЗДЕСЬ БОЛЬШЕ НЕТ. Щупальца и нож живут в пространстве (Grab3D),
+	# а плоскому слою осталось то, что и должно быть плоским: виньетка по краям,
+	# строка и полоска срока.
+	var f := UI.text(500)
 	var jit := Vector2(_rng.randf() - 0.5, _rng.randf() - 0.5) * (3.0 + 7.0 * grip)
 	draw_string(f, Vector2(0, size.y * 0.80) + jit, label, HORIZONTAL_ALIGNMENT_CENTER,
 		size.x, 21, Color(1.0, 0.42, 0.35))
 	var w := 260.0
-	var frac: float = clampf(float(count) / float(need), 0.0, 1.0)
+	var frac: float = clampf(float(hits) / float(need * ARM_HP), 0.0, 1.0)
 	draw_rect(Rect2((size.x - w) * 0.5, size.y * 0.835, w, 12), Color(1.0, 0.42, 0.35), false, 1.0)
 	draw_rect(Rect2((size.x - w) * 0.5, size.y * 0.835, w * frac, 12), Color(1.0, 0.42, 0.35))

@@ -24,9 +24,9 @@ print push_warning push_error ceil'''.split())
 ENGINE = set('''get_world_3d get_children move_child to_local to_global bool float int export export_group onready size visible position rotation scale
 global_position global_transform transform velocity mesh material_override text color
 queue_redraw queue_free set_process set_physics_process set_process_unhandled_input add_child
-is_physics_processing is_processing seed layer modulate get_process_delta_time get_physics_process_delta_time is_instance_valid
+is_physics_processing is_processing seed layer modulate get_process_delta_time get_physics_process_delta_time is_instance_valid lerp_angle get_window
 find_child get_node has_node get_parent has_signal look_at move_and_slide move_toward get_viewport
-draw_rect draw_circle draw_line draw_polyline draw_string draw_texture_rect draw_arc
+draw_rect draw_circle draw_line draw_polyline draw_string draw_texture_rect draw_arc draw_colored_polygon draw_polygon draw_multiline set_process_input set_process_unhandled_input set_physics_process set_process
 get_local_mouse_position set_anchors_preset mouse_filter create_tween get_tree add_theme_color_override
 add_theme_font_size_override top_level sorting_offset name emit connect'''.split())
 
