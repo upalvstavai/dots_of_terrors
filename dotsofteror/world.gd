@@ -40,6 +40,7 @@ const SaysScript := preload("res://Says.gd")
 const CreditsScript := preload("res://CreditsUI.gd")
 const DeathScript := preload("res://DeathUI.gd")
 const PauseScript := preload("res://PauseUI.gd")
+const VisionScript := preload("res://Vision.gd")
 const Settings := preload("res://Settings.gd")
 
 ## СКРИМЕРЫ. Скример — событие, а не реакция на поимку: если бить каждый раз,
@@ -229,6 +230,7 @@ var fat_roll: float = 0.0
 var credits_ui
 var death_ui
 var pause_ui
+var vision_ui                   ## картинка, которая проступает на сданном полотне
 var started: bool = false   ## нажата ли клавиша на стартовом экране
 ## ЛАБОРАТОРИЯ. Мир тот же, но сам он не нападает: монстр стоит, фазы не идут,
 ## щупальца не бьют, гнёзда не оживают. Нужно это затем, что разглядывать
@@ -2475,6 +2477,11 @@ func _build_ui() -> void:
 	var top := CanvasLayer.new()
 	top.layer = 100
 	add_child(top)
+	# ВИДЕНИЕ. Показывается поверх всего, но ПОД паузой: из картинки надо уметь
+	# выйти в меню, а не наоборот.
+	vision_ui = VisionScript.new()
+	vision_ui.closed.connect(_on_vision_closed)
+	top.add_child(vision_ui)
 	pause_ui = PauseScript.new()
 	pause_ui.resumed.connect(_on_resume)
 	pause_ui.restarted.connect(_restart)
@@ -3324,9 +3331,21 @@ func _on_solved() -> void:
 	_refresh_marks()
 	if done >= n_canv:
 		hud.text = Lang.t("h_noexit")
+	# ЧТО БЫЛО ПОД ТОЧКАМИ. Полотно наконец что-то значит: за каждым спрятан
+	# кадр чужой истории, и семь кадров складываются в неё целиком.
+	if vision_ui != null and done >= 1 and done <= 7:
+		_freeze_player(true)
+		vision_ui.show_one(done - 1)
 
 
 ## Провалил по времени — рисунок осыпался, страх копится и трясёт следующую попытку.
+## Картинку закрыли — возвращаем управление. Отдельной функцией, потому что
+## закрыть её можно двумя способами: сам нажал или кончился срок показа.
+func _on_vision_closed() -> void:
+	_freeze_player(false)
+	_update_hud()
+
+
 func _on_failed() -> void:
 	if says != null and done < canv_fails.size() and int(canv_fails[done]) >= 1:
 		says.try_say("v_shake")
@@ -3745,7 +3764,8 @@ var _ui_open: bool = false
 ## Дело было не в курсоре: игра просто не останавливалась.
 ## Открыто ли какое-нибудь окно поверх игры.
 func _ui_blocking() -> bool:
-	return board.visible or note_ui.visible or grab_ui.visible or scare_ui.visible
+	return board.visible or note_ui.visible or grab_ui.visible or scare_ui.visible \
+		or (vision_ui != null and vision_ui.visible)
 
 
 func paused() -> bool:

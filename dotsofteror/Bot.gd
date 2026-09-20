@@ -2998,6 +2998,19 @@ func run(want: Array) -> void:
 		say("  в убежище 45 с во время погони: ударов %d (ждём 0)" % [ударов])
 		if ударов > 0:
 			warn("убежище бьёт во время погони — тогда это не убежище")
+	if want.has("видение"):
+		say("═══ КАРТИНКИ ЗА ПОЛОТНАМИ ═══")
+		stage_clean()
+		w.player_node.invuln = 9999.0
+		w.monster.visible = false
+		w.monster.mode = "inwall"
+		w.monster.resurface_t = 9999.0
+		for n in [0, 1]:
+			w.vision_ui.show_one(n)
+			await w.get_tree().create_timer(2.8).timeout
+			await shot("видение_%d" % (n + 1))
+			w.vision_ui._close()
+			await w.get_tree().create_timer(0.3).timeout
 	if want.has("зрение"):
 		say("═══ КАДР ЧИСЛАМИ: ЧТО ВИДНО БЕЗ ГЛАЗ ═══")
 		stage_clean()
