@@ -115,7 +115,7 @@ const LOSE_CELLS := 13.0
 ## реакцию: это цена того, что ты бежал по прямой. Спереди поодаль — сначала
 ## ревёт и стоит, и вот эта секунда и есть страх: ты видишь её, она видит тебя,
 ## и ничего ещё не случилось.
-const DIVE_GAP := [6.0, 13.0]    ## через столько секунд погони она ныряет
+const DIVE_GAP := [5.0, 10.0]    ## через столько секунд погони она ныряет
 const DIVE_HIDE := [0.7, 1.6]    ## и столько сидит в камне: это нырок, а не отход
 const DIVE_BLANK := 0.4          ## доля нырков, после которых она выходит вплотную
 const DIVE_FRONT := [3, 6]       ## клеток впереди тебя, если выходит поодаль
@@ -159,6 +159,10 @@ var amb_out: Vector3 = Vector3.ZERO  ## куда он из камня выпры
 var _amb_len: float = 0.0      ## на сколько заводить погоню после прыжка
 ## Куда игрок смотрит — нужно, чтобы выйти ИМЕННО СПЕРЕДИ. Ставит мир.
 var player_face: Vector3 = Vector3.FORWARD
+## РЫВОК В ЛИЦО. Сколько ещё ждать до выхода перед самым лицом и надо ли
+## выбирать клетку по взгляду, а не по близости. Ставит мир — после показа.
+var jump_t: float = 0.0
+var jump_face: bool = false
 var dive_t: float = 0.0           ## до следующего нырка в погоне
 var dive_kind: int = 0            ## 0 обычный выход, 1 вплотную, 2 спереди
 var roar_t: float = 0.0           ## ревёт и стоит
@@ -174,6 +178,10 @@ var surface_t: float = 0.0
 var surface_from: Vector3 = Vector3.ZERO
 var surface_pos: Vector3
 var resurface_t: float = 0.0
+## ДЕРЖАТЬ В КАМНЕ. Ставит мир: он считает затишье по сданным полотнам, а не по
+## секундам (см. world._update_calm). Нырок посреди погони это не трогает —
+## иначе тварь, нырнувшая на секунду, осталась бы в камне до конца затишья.
+var hold_out: bool = false
 ## ДАВЛЕНИЕ ВМЕСТО ТАЙМЕРА.
 ##
 ## Выход из камня шёл по сроку 7–42 секунды, который тикал сам по себе. Разброс
@@ -2336,6 +2344,11 @@ func _tick_inwall(delta: float, player_pos: Vector3) -> void:
 		# шести секунд, если просто идти. Пока рисуешь — девятнадцать. В
 		# убежище — под три минуты. Разброс берётся из поведения, а не из rand.
 		pressure += delta * k
+		# Потолок чуть ниже порога: давление копится и в затишье, но выйти по
+		# нему нельзя. Значит после сданного полотна он выходит не в ту же
+		# секунду — а через несколько, когда игрок уже отвернулся от холста.
+		if hold_out and dive_kind == 0:
+			pressure = minf(pressure, press_need * 0.9)
 		if resurface_t <= 0.0 and pressure >= press_need:
 			pressure = 0.0
 			press_need = PRESS_OUT * _rng.randf_range(
@@ -2351,7 +2364,10 @@ func _tick_inwall(delta: float, player_pos: Vector3) -> void:
 			# В третьей фазе — всегда вплотную, и это же и есть обещанное
 			# «может выйти из любой стены»: клетка выбирается от ИГРОКА, а не
 			# от того места, куда он успел доползти сквозь камень.
-			_begin_surface(player_pos, omniscient or _rng.randf() < 0.5)
+			# ДОЛЯ ПОКАЗОВ ВЫРОСЛА. Встреч стало меньше (мир держит его в камне,
+			# пока не сдано полотно), и каждая должна стоить дороже: показ —
+			# лучшее, что у встречи есть, и именно он открывает рывок в лицо.
+			_begin_surface(player_pos, omniscient or _rng.randf() < 0.35)
 		return
 	inwall_time += delta
 	if inwall_time > INWALL_CAP:
@@ -2546,12 +2562,35 @@ func _emerge(player_pos: Vector3) -> void:
 	_begin_surface(player_pos, first_out)
 
 
+## РЫВОК В ЛИЦО. Замена обычному рывку после показа: вместо того чтобы нестись
+## к игроку сквозь стены — а это ещё десятки метров и добрых полминуты, за
+## которые весь испуг от показа выветривается, — он просто перестаёт быть
+## где-либо. Пара секунд тишины, и он вырастает перед самым лицом.
+##
+## Придумал это играющий (20.09), увидев такое в чужой игре: «камера прилетела
+## в место, где появился монстр, далеко где-то, и тут бац — он через пару
+## секунд вылазит перед экраном». Приём стоит на редкости: третий раз подряд
+## он уже расписание, а не испуг, — счёт держит мир.
+func face_jump(delay: float) -> void:
+	mode = "rush"
+	visible = false
+	path.clear()
+	trail.clear()
+	rush_speed = 0.0
+	jump_t = maxf(0.1, delay)
+	jump_face = true
+
+
 ## НАЧАЛО РЫВКА. Зовёт мир, когда камера вернулась к игроку.
 func start_rush(speed: float = 0.0) -> void:
 	mode = "rush"
 	visible = false
 	path.clear()
 	trail.clear()
+	# Обычный рывок — не рывок в лицо: счёт и выбор клетки по взгляду гасим,
+	# иначе незавершённый прыжок переползёт в следующую погоню.
+	jump_t = 0.0
+	jump_face = false
 	# По умолчанию — заметно быстрее бегущего игрока: он не убегает от этого,
 	# он только выбирает, где его застанут.
 	rush_speed = speed if speed > 0.1 else player_speed * 1.55
@@ -2559,6 +2598,22 @@ func start_rush(speed: float = 0.0) -> void:
 
 func _tick_rush(delta: float, player_pos: Vector3) -> void:
 	_update_trail(delta)
+	# РЫВОК В ЛИЦО НЕ ЕДЕТ, А ЖДЁТ. Расстояние тут ни при чём: пока идёт счёт,
+	# его нет нигде, а на нуле он уже здесь — и дальше всё как у обычного
+	# рывка, тот же выход в упор.
+	if jump_t > 0.0:
+		jump_t -= delta
+		if jump_t > 0.0:
+			return
+		# В УБЕЖИЩЕ РЫВКОМ НЕ ХОДЯТ. Меловой круг — единственное место, где игра
+		# обещает передышку, и приём, который это обещание обходит, стоит
+		# дороже, чем испуг. Переводим в обычный рывок: он всё равно придёт,
+		# только своим ходом и на общих правилах убежища.
+		if safe_cells.has(_to_cell(player_pos)):
+			jump_face = false
+			start_rush(0.0)
+			return
+		global_position = player_pos
 	var to: Vector3 = player_pos - global_position
 	to.y = 0.0
 	var d: float = to.length()
@@ -2573,6 +2628,14 @@ func _tick_rush(delta: float, player_pos: Vector3) -> void:
 	var pc := _to_cell(player_pos)
 	var best := pc
 	var bd: float = 1e9
+	# Вторая, отдельная находка: клетка ПО ВЗГЛЯДУ. Нужна только рывку в лицо,
+	# и держим её врозь, чтобы обычный выход в упор остался прежним.
+	var bestf := pc
+	var bf: float = -1e9
+	var fv := Vector2(player_face.x, player_face.z)
+	if fv.length() < 0.01:
+		fv = Vector2(0, 1)
+	fv = fv.normalized()
 	for dx2 in range(-2, 3):
 		for dy2 in range(-2, 3):
 			var c := Vector2i(pc.x + dx2, pc.y + dy2)
@@ -2580,6 +2643,17 @@ func _tick_rush(delta: float, player_pos: Vector3) -> void:
 				continue
 			var w: Vector3 = _to_world(c)
 			var far: float = w.distance_to(player_pos)
+			if jump_face:
+				var t2 := Vector2(w.x - player_pos.x, w.z - player_pos.z)
+				# Ближе, чем обычный выход: весь приём в том, что он
+				# ВЫРАСТАЕТ В КАДРЕ, а не появляется где-то впереди.
+				if t2.length() > 0.01 and far >= cell_size * 0.5 \
+						and far <= cell_size * 1.2:
+					# Чем прямее по взгляду, тем лучше; при равном — ближе.
+					var sc: float = fv.dot(t2.normalized()) - far * 0.02
+					if sc > bf:
+						bf = sc
+						bestf = c
 			# НЕ ДАЛЬШЕ ПОЛУТОРА КЛЕТОК. Он выходит НА игрока, а не «где-то
 			# рядом»: с восьми метров это снова начало обычной погони, а не
 			# то, от чего вздрагивают.
@@ -2589,8 +2663,46 @@ func _tick_rush(delta: float, player_pos: Vector3) -> void:
 			if far < bd:
 				bd = far
 				best = c
+	# В лицо — если такая клетка нашлась. Не нашлась (тупик, стена перед носом)
+	# — выходим как обычно: лучше выход за плечом, чем застрявший в камне.
+	var was_jump: bool = jump_face
+	if jump_face and bestf != pc:
+		best = bestf
+	jump_face = false
 	surface_pos = _to_world(best)
-	surface_from = global_position
+	# ОТКУДА ОН ВЫЕЗЖАЕТ. Обычный рывок едет оттуда, где его застал выход, —
+	# то есть со стороны, откуда нёсся. Рывку в лицо ехать неоткуда: секунду
+	# назад его не было нигде, а стоял он в эти доли секунды ВНУТРИ игрока, и
+	# первый же кадр был бы зелёным пятном во весь экран. Значит — из стены
+	# рядом с той клеткой, как при всяком выходе из камня.
+	surface_from = _wall_beside(best) if was_jump else global_position
+	# И БЛИЖЕ, ЧЕМ ЦЕНТР КЛЕТКИ. Клетки стоят в четырёх метрах друг от друга, и
+	# выход «в соседнюю клетку по взгляду» — это шесть метров до игрока: видно,
+	# но не страшно. Рывку в лицо нужен рост во весь экран, поэтому точка
+	# берётся не из сетки, а из взгляда — ровно на том расстоянии, ближе
+	# которого он и так не подходит (STANDOFF).
+	if was_jump:
+		var fw3 := Vector3(player_face.x, 0.0, player_face.z)
+		if fw3.length() > 0.01:
+			fw3 = fw3.normalized()
+			var want: Vector3 = player_pos + fw3 * STANDOFF
+			want.y = surface_pos.y
+			var wc := _to_cell(want)
+			# И ЕДЕТ ОН ИЗ ТЕМНОТЫ ВПЕРЕДИ, А НЕ ИЗ СТЕНЫ ЗА СПИНОЙ. Стена
+			# рядом с клеткой выбиралась первой попавшейся, и на замере он
+			# выезжал из-за спины (косинус −0.71): мир в тот же миг разворачивал
+			# игроку голову — тот успевал увидеть пустую стену, а тварь
+			# оказывалась уже перед ним. Теперь он выходит ОТТУДА, КУДА ИГРОК
+			# СМОТРИТ, и едет на него.
+			if not maze.is_wall(wc.x, wc.y):
+				surface_pos = want
+				surface_from = want + fw3 * cell_size * 0.9
+			else:
+				# Перед лицом стена — тем лучше: выйдет из неё. Место выхода
+				# остаётся выбранным по взгляду, а едет он из самого камня.
+				surface_from = want
+			surface_from.y = surface_pos.y
+	global_position = surface_from
 	surface_t = 0.30
 	mode = "surfacing"
 	visible = true
@@ -2845,6 +2957,13 @@ func _tick_out(delta: float, player_pos: Vector3, anger: int, in_finale: bool) -
 			path.clear()
 			trail.clear()
 			resurface_t = _rng.randf_range(DIVE_HIDE[0], DIVE_HIDE[1])
+			# И ДАВЛЕНИЕ СРАЗУ НА ПОРОГ. Выход из камня считает ДВА условия:
+			# срок и давление. Срок нырка — секунда, а давление обнулялось на
+			# прошлом выходе и копится по единице в секунду: нырнув, тварь
+			# уходила не на секунду, а на полминуты, и это выглядело как «он
+			# просто исчез посреди погони». Срок нырка теперь решает всё сам —
+			# ровно как у lurk() ниже.
+			pressure = press_need
 			return
 		chase_t -= delta
 		# Пока игрок бежит к убежищу, таймер не выпускает её из погони: он
@@ -3093,6 +3212,8 @@ func _to_cell(pos: Vector3) -> Vector2i:
 ## игроком голову — потому что голову ведёт то, что живое, а стены не следят.
 func ambush_at(cell: Vector2i, flat: Vector3 = Vector3.ZERO) -> void:
 	mode = "ambush"
+	jump_t = 0.0
+	jump_face = false
 	parked = false
 	visible = true
 	stun = 0.0
@@ -3545,6 +3666,8 @@ func recoil(seconds: float, from: Vector3) -> void:
 func lurk(seconds: float) -> void:
 	if mode == "gone":
 		return
+	jump_t = 0.0
+	jump_face = false
 	dive_kind = 2                 # выйдет СПЕРЕДИ, в упор
 	mode = "inwall"
 	visible = false
@@ -3570,6 +3693,8 @@ func retreat_to_wall(delay_min: float, delay_max: float) -> void:
 	visible = false
 	path.clear()
 	roam_cell = Vector2i(-1, -1)
+	jump_t = 0.0
+	jump_face = false
 	dive_kind = 0
 	roar_t = 0.0
 	dive_t = _rng.randf_range(DIVE_GAP[0], DIVE_GAP[1])

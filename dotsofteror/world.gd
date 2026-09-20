@@ -365,6 +365,22 @@ var end_t: float = 0.0            ## сколько идёт подход
 var end_walk: float = 0.0         ## метры подхода в финале — для шагов
 var fat_ending: bool = false      ## добивание — это КОНЦОВКА, а не смерть
 var outings: int = 0              ## сколько раз он уже показывался
+var out_gap: float = 99.0         ## сколько он уже сидит в камне между выходами
+var out_since: float = 0.0        ## сколько длится нынешний выход
+var form_out: int = -1            ## на каком выходе фигура уже случилась
+var calm_armed: bool = false      ## затишье после встречи взведено
+var calm_done: int = 0            ## сколько было сдано полотен, когда он ушёл
+var calm_since: float = 0.0       ## сколько длится затишье
+var reveals: int = 0              ## сколько раз мир показывал его камерой
+var jump_left: int = JUMP_MAX     ## сколько рывков в лицо осталось на проход
+var jump_armed: bool = false      ## нынешний показ кончится рывком в лицо
+var jump_now: bool = false        ## он выходит из камня рывком, а не погоней
+var raid: int = 0                 ## набег на рисующего: 0 нет, 1 идёт
+var raid_canv: int = -1           ## на каком полотне он идёт
+var raid_done: Array[int] = []    ## на каких полотнах уже был
+var raid_ph: float = 0.0          ## фаза мигания палочки
+var raid_n: int = -1              ## номер последней вспышки: по нему щёлкает звук
+var raid_flee: bool = false       ## сорванное полотно должно уйти на другое место
 var was_chasing: bool = false     ## он гнался в прошлом кадре
 var chase_sting_t: float = 0.0    ## откат удара «началась погоня»
 var form_cool: float = 0.0
@@ -393,6 +409,36 @@ const TRAP_TIMES := 2
 ## точно случится.
 const FORM_TIMES := 4
 const FORM_LEN := 28.0
+## Сколько он должен просидеть в камне, чтобы следующее появление считалось
+## НОВОЙ ВСТРЕЧЕЙ. Короткие уходы в камень — часть той же встречи, а не новая:
+## нырок посреди погони длится до 1.6 с, а уход после хвата (LURK) — пять, и
+## оба кончаются тем, что он выныривает на том же игроке. Порог стоит выше
+## обоих: двенадцать секунд без него — это уже «он отстал».
+const OUT_NEW := 12.0
+## И сколько он ходит собой, прежде чем стать фигурой.
+const FORM_IN := 9.0
+## Сколько полотен надо сдать после встречи, чтобы он вышел снова.
+const CALM_CANV := 1
+## И сколько он ждёт этого полотна, прежде чем выйти без него.
+const CALM_MAX := 150.0
+## НАБЕГ НА РИСУЮЩЕГО. На каких полотнах (счёт с нуля: 4 — пятое, 6 — седьмое),
+## с какой доли рисунка он срывается с места, с какого расстояния идёт и как
+## быстро. Скорость в клетках в секунду: игрок идёт примерно 0.85 — значит он
+## идёт быстрее игрока и торговаться с ним нельзя, можно только дорисовать.
+const RAID_AT := [4, 6]
+## Обычная яркость шарика на кончике палочки. Держим числом, а не «шесть в двух
+## местах»: мигание набега возвращает её после себя, и разойтись им нельзя.
+const BEAD_E := 6.0
+const RAID_PART := 0.40
+const RAID_CELLS := 11
+const RAID_SPEED := 0.92
+## РЫВОК В ЛИЦО. Сколько таких за проход и с какой долей показов он случается.
+## Трёх достаточно: четвёртый читается как приём игры, а не как случай.
+const JUMP_MAX := 3
+const JUMP_CHANCE := 0.75
+## Сколько тишины между возвратом камеры и его выходом. Полторы секунды — это
+## «только что показали, где он, — и вот он здесь»; больше трёх уже забывается.
+const JUMP_WAIT := [1.4, 2.3]
 const FORM_COOL := 80.0
 ## Сколько ждать удобного момента, прежде чем сделать его самим.
 const FORM_WAIT := 45.0
@@ -1809,7 +1855,7 @@ func _build_viewmodel(head: Node3D) -> void:
 	bmat.albedo_color = Color(0.92, 0.97, 1.0)
 	bmat.emission_enabled = true
 	bmat.emission = Color(0.80, 0.92, 1.0)
-	bmat.emission_energy_multiplier = 6.0
+	bmat.emission_energy_multiplier = BEAD_E
 	bmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	bead.material_override = bmat
 	# Кончик — это +Y меша: цилиндр центрирован, высота 0.46.
@@ -2981,6 +3027,9 @@ func _process(delta: float) -> void:
 	_update_lift(delta)
 	_update_slam(delta)
 	_update_trap(delta)
+	_watch_outings(delta)
+	_update_calm(delta)
+	_update_raid(delta)
 	_update_form(delta)
 	_update_human_attack(delta)
 	_update_still(delta)
@@ -3340,6 +3389,12 @@ func _monster_at_canvas(delta: float) -> void:
 	board.near = 1.0 - clampf(d / (cell_size * 7.0), 0.0, 1.0)
 	if d > MonsterScript.CATCH_DIST:
 		return
+	# ПОСЛЕДНЯЯ ТОЧКА УЖЕ СОЕДИНЕНА. Полотно живёт ещё полсекунды ради вспышки
+	# (см. _on_solved), и всё это время он мог дойти и «сорвать» готовый
+	# рисунок. Сдано — значит сдано: отнимать это у игрока в кадре, где он
+	# смотрит на свою законченную работу, нечестно вдвойне.
+	if board.burn > 0.0:
+		return
 	# Только что вырвался — не трогает. Та же неуязвимость, что и везде: без неё
 	# можно было вырваться из хвата, шагнуть к полотну и тут же быть схваченным
 	# снова, уже без единого шанса.
@@ -3483,6 +3538,13 @@ func _on_failed() -> void:
 	_add_madness(Lang.t("m_torn"))
 	if board_torn:
 		board_torn = false
+		# СОРВАЛ ВО ВРЕМЯ НАБЕГА — ЗНАЧИТ ПОЛОТНО ЕЩЁ И УЙДЁТ. Просьба
+		# играющего: «когда ты выбрался, нужное полотно уходит на расстояние от
+		# того места, где ты его сначала проходил». Сам переезд — когда игрок
+		# освободится: полотно, уехавшее за экраном хвата, он бы не заметил.
+		if raid != 0:
+			raid_flee = true
+			_raid_stop(false)
 		board.visible = false
 		_pause_player(false)
 		if sfx != null:
@@ -5558,6 +5620,272 @@ func _human_tongue() -> void:
 	hud.text = Lang.t("h_tongue")
 
 
+## НАБЕГ НА РИСУЮЩЕГО. Пятое и седьмое полотно — единственные два раза за игру,
+## когда он приходит НА РИСУНОК нарочно.
+##
+## Придумал играющий (20.09): «ты делаешь полотно, уже почти закончил — он
+## вылазит; палочка начинает сначала медленно, потом всё быстрее и ярче мигать,
+## как бы заставляя игрока напрягаться и стараться закончить как можно быстрее.
+## Успел — монстр уходит; не успел — срывает полотно, атакует, и когда ты
+## выбрался, полотно уходит от того места, где ты его проходил».
+##
+## Почему это вообще работает: рисование — единственное место в игре, где игрок
+## занят ОБЕИМИ руками и смотрит в одну точку. Всё, что у него остаётся, — слух
+## и палочка в кадре. Значит и давить надо через них, а не полоской в углу.
+##
+## Механика подхода не новая: этим же способом он идёт к двери в финале
+## (to_finale + _tick_finale) — путь по коридорам с известной скоростью и
+## честная доля пройденного. Здесь она просто перестаёт быть только финальной.
+func _update_raid(delta: float) -> void:
+	if monster == null or player_node == null or board == null:
+		return
+	if raid != 0:
+		# Полотно закрылось — набег кончился. Чем он кончился, говорит счёт
+		# сданных: сдал — успел, а всё остальное (сорвал, бросил, кончилось
+		# время) — не успел.
+		if not board.visible or dead or won or lab:
+			_raid_stop(done > raid_canv)
+			return
+		# Полоска подхода — от честного пути по коридорам, а не от расстояния
+		# по прямой: сквозь стену до него могут быть три метра, а идти ему
+		# полкарты, и полоска врала бы в самую страшную сторону.
+		board.show_near = true
+		board.near = monster.finale_near
+		_raid_wand(delta, monster.finale_near)
+		return
+	if dead or won or lab or finale or not board.visible:
+		return
+	if board.final or board.tutor:
+		return
+	if not RAID_AT.has(done) or raid_done.has(done):
+		return
+	# Не поверх чужой сцены и не поверх хвата: набег — это своя сцена.
+	#
+	# И ПРОВЕРЯЕМ НЕ _busy(). Он считает занятым всякого, у кого открыто окно, а
+	# у рисующего окно открыто ВСЕГДА — это и есть полотно. С _busy() набег не
+	# начался бы ни разу; поймано первым же прогоном стенда.
+	if phase < 2 or _attack_busy() or cine != 0 or paused():
+		return
+	if note_ui.visible or scare_ui.visible \
+			or (vision_ui != null and vision_ui.visible):
+		return
+	# ОН ДОЛЖЕН ПРИЙТИ ИЗДАЛЕКА. Если он уже гонится и уже рядом, приходить
+	# неоткуда: то, что происходит, описано в _monster_at_canvas, и второй
+	# напор поверх первого не страшнее, а просто непонятен.
+	#
+	# А вот ОБХОД вокруг рисующего набегу не мешает, хотя он тоже «рядом»: в
+	# обходе он ходит кругами и не приближается, игрок смотрит в холст и его не
+	# видит. Сначала здесь стояло «если видно и ближе шести клеток», и это
+	# отменяло набег всякий раз, когда полотно открылось при вышедшей твари, —
+	# то есть ровно на поздних полотнах, где набег и задуман.
+	var near_now: float = Vector2(
+		monster.global_position.x - player_node.global_position.x,
+		monster.global_position.z - player_node.global_position.z).length()
+	if monster.mode == "chase" and near_now < cell_size * 6.0:
+		return
+	# И НЕ С ПЕРВОЙ ТОЧКИ. «Уже почти закончил» — это середина рисунка: раньше
+	# игрок ещё не вложился в него и бросит без сожаления, позже он дорисует
+	# быстрее, чем тот дойдёт.
+	if board.n <= 0 or float(board.next_idx) / float(board.n) < RAID_PART:
+		return
+	_raid_start()
+
+
+func _raid_start() -> void:
+	raid = 1
+	raid_canv = done
+	raid_ph = 0.0
+	raid_n = -1
+	raid_done.append(done)
+	monster.unpark()
+	monster.to_finale(world_to_cell(player_node.global_position), RAID_CELLS,
+		RAID_SPEED)
+	monster._grow_out()
+	monster.set_lit(1.0)
+	board.show_near = true
+	board.near = 0.0
+	hud.text = Lang.t("h_raid")
+	if sfx != null:
+		# Слышно, что он ВЫШЕЛ, и слышно, откуда. Дальше его выдают шаги —
+		# они уже громче, пока полотно открыто (см. _on_monster_step).
+		sfx.play_at("roar", monster.global_position, 5.0)
+		sfx.sting("chase", -7.0)
+	print("[журнал] %.0f с, полотно %d: набег на рисующего с %d клеток"
+		% [_clock, done + 1, RAID_CELLS])
+
+
+func _raid_stop(in_time: bool) -> void:
+	if raid == 0:
+		return
+	raid = 0
+	raid_canv = -1
+	_raid_wand_off()
+	if monster == null:
+		return
+	monster.finale_mode = false
+	if in_time:
+		# УСПЕЛ — И ОН УХОДИТ. Это единственная награда, которая тут уместна:
+		# не очки и не передышка вообще, а то, что беда, которую ты слышал
+		# всю последнюю минуту, прошла мимо.
+		monster.retreat_to_wall(16.0, 30.0)
+		hud.text = Lang.t("h_raid_gone")
+		if sfx != null:
+			sfx.play_at("roar", monster.global_position, 1.0)
+		print("[журнал] %.0f с: набег отбит — успел дорисовать" % _clock)
+	else:
+		# Не успел — он уже здесь, и дальше это обычная погоня, а не сцена.
+		#
+		# КРОМЕ ТОГО СЛУЧАЯ, КОГДА ИГРОКА УЖЕ НЕТ. Если он не пережил хват, у
+		# развязки свой порядок: тварь уходит в камень, игрок просыпается в
+		# убежище. Погоня, включённая поверх, означала бы «очнулся, а он уже
+		# бежит» — наказание за то, что уже наказано.
+		if not dead and not (grab_ui != null and grab_ui.visible):
+			monster.mode = "chase"
+			monster.chase_t = maxf(monster.chase_t, 12.0)
+		# Причина у «не успел» бывает разная, и в журнале это должно читаться:
+		# дошёл и сорвал — одно, а бросил холст и убежал — совсем другое.
+		print("[журнал] %.0f с: набег %s (доля пути %.2f)" % [_clock,
+			"дошёл" if monster.finale_near > 0.7 else "оборван — полотно закрыли",
+			monster.finale_near])
+
+
+## МИГАНИЕ ПАЛОЧКИ. Сначала раз в секунду, под конец — шесть раз, и каждая
+## вспышка ярче прежней. Между вспышками свет ПРИГЛУШЕН: если просто добавлять
+## яркости, получается не тревога, а фонарь помощнее.
+##
+## Считаем от доли пройденного им пути, а не от расстояния по прямой: за стеной
+## он может быть в трёх метрах и ещё полминуты идти.
+func _raid_wand(delta: float, k: float) -> void:
+	k = clampf(k, 0.0, 1.0)
+	raid_ph += delta * lerpf(1.0, 6.0, k * k)
+	var n: int = int(raid_ph)
+	if n != raid_n:
+		raid_n = n
+		if sfx != null:
+			# Сухой щелчок на каждую вспышку: мигание должно быть слышно, иначе
+			# оно теряется за холстом, в который игрок и смотрит.
+			sfx.play_tone("hit_hi", lerpf(-24.0, -8.0, k), lerpf(1.3, 1.9, k))
+	# Короткая вспышка и долгий спад: это мигание, а не синус.
+	var f: float = pow(clampf(1.0 - fmod(raid_ph, 1.0), 0.0, 1.0), 2.4)
+	if wand_lamp != null and wand_lamp.visible:
+		wand_lamp.light_energy = player_light * (0.42 + f * lerpf(1.1, 3.4, k))
+		_raid_bead(0.5 + f * lerpf(2.0, 6.0, k))
+		return
+	# ПАЛОЧКИ В РУКЕ МОЖЕТ И НЕ БЫТЬ. Её выбивают в хвате, и тогда весь приём
+	# остался бы без единственного своего знака. Тогда мигает сам холст: он в
+	# этот момент и есть весь свет вокруг игрока. Мягче, чем палочка, —
+	# рисовать по мигающему листу должно быть можно.
+	if board_face != null:
+		var m := board_face.material_override as StandardMaterial3D
+		if m != null:
+			m.emission_energy_multiplier = 0.9 * (0.75 + f * lerpf(0.5, 1.3, k))
+
+
+func _raid_wand_off() -> void:
+	raid_ph = 0.0
+	raid_n = -1
+	if board_face != null:
+		var m := board_face.material_override as StandardMaterial3D
+		if m != null:
+			m.emission_energy_multiplier = 0.9
+	# Свет палочки вернёт _update_mon_lamp в тот же кадр, а вот шарик на
+	# кончике держит свою яркость сам — его возвращаем руками.
+	_raid_bead(1.0)
+
+
+## ПОЛОТНО УЕЗЖАЕТ ПОСЛЕ НАБЕГА. Отдельной функцией, потому что вызывают её из
+## двух концов одного события: вырвался — считаем от места, где рисовал;
+## не вырвался — от убежища, в котором очнулся. Оба раза это «не там, где было».
+func _raid_flee_now() -> void:
+	if not raid_flee:
+		return
+	raid_flee = false
+	if done >= canv_cells.size() or done >= canv_marks.size():
+		return
+	_flee_canvas()
+
+
+## Яркость шарика на кончике палочки в долях от обычной.
+func _raid_bead(k: float) -> void:
+	if wand_bead == null:
+		return
+	var m := wand_bead.material_override as StandardMaterial3D
+	if m != null:
+		m.emission_energy_multiplier = BEAD_E * k
+
+
+## СЧЁТ ВЫХОДОВ. Один на всю игру: по нему решают и форму, и затишье между
+## погонями. Стоит отдельно от них затем, что считать надо в любой фазе, а обоим
+## потребителям есть когда выйти раньше времени.
+func _watch_outings(delta: float) -> void:
+	if monster == null:
+		out_gap += delta
+		return
+	var out_now: bool = monster.visible and monster.mode != "inwall" \
+		and monster.mode != "ambush" and monster.mode != "surfacing"
+	if not out_now:
+		out_gap += delta
+		out_since = 0.0
+	else:
+		out_since += delta
+		if not out_seen:
+			# НЫРОК ПОСРЕДИ ПОГОНИ — НЕ НОВЫЙ ВЫХОД. Он уходит в камень на
+			# секунду-полторы и выныривает снова, а счёт считал это появлением:
+			# за одну погоню набегало три-четыре «выхода», и каждый второй
+			# становился фигурой. Отсюда и слова играющего: «за всё время он не
+			# напал в форме осьминога, всё время бегал в форме человека».
+			# Новый выход — тот, перед которым он просидел в камне хотя бы
+			# OUT_NEW секунд; нырок короче любого из них.
+			if out_gap >= OUT_NEW:
+				outings += 1
+				# В журнал — это опорная строка для всего остального: по ней
+				# видно, сколько было ВСТРЕЧ, а не вспышек видимости.
+				print("[журнал] %.0f с, полотен %d: встреча №%d (в камне был %.0f с)"
+					% [_clock, done, outings, out_gap])
+			out_gap = 0.0
+	out_seen = out_now
+
+
+## ЗАТИШЬЕ МЕЖДУ ПОГОНЯМИ СЧИТАЕТСЯ ПОЛОТНАМИ, А НЕ СЕКУНДАМИ.
+##
+## Играющий (20.09): «пусть погонь станет меньше; она должна появляться типа —
+## вот ты расслабился, спокойно собрал два полотна, и он вылезает; а не так,
+## что ты прошёл погоню, побегал, почти нашёл полотно — и оно опять вылезло.
+## Это раздражает, потому что часто».
+##
+## Секундами это не чинится: сорок секунд поиска следующего полотна — это как
+## раз то время, когда игрок никуда не дошёл и ничего не успел. Поэтому порог
+## теперь событие, а не срок: после встречи он сидит в камне, пока не сдано
+## ещё CALM_CANV полотно. Давление всё это время копится, но упирается в потолок
+## чуть ниже порога — значит выйдет он не в ту же секунду, когда полотно сдано,
+## а через несколько, уже в тишине.
+##
+## CALM_MAX — страховка для того, кто заблудился: без полотен он всё равно
+## дождётся встречи, просто нескоро.
+func _update_calm(delta: float) -> void:
+	if monster == null:
+		return
+	if dead or won or lab or ending != 0:
+		monster.hold_out = false
+		return
+	# Отсчёт начинается не в конце погони, а когда он ОКОНЧАТЕЛЬНО ушёл в
+	# камень: нырок посреди погони — это ещё та же встреча.
+	if out_gap >= OUT_NEW:
+		if not calm_armed and outings > 0:
+			calm_armed = true
+			calm_done = done
+			calm_since = 0.0
+	else:
+		calm_armed = false
+	calm_since += delta
+	var hold: bool = calm_armed and done < calm_done + CALM_CANV \
+		and calm_since < CALM_MAX
+	if hold != monster.hold_out:
+		print("[журнал] %.0f с, полотен %d: затишье %s" % [_clock, done,
+			"началось" if hold else "кончилось (ждал %.0f с)" % calm_since])
+	monster.hold_out = hold
+
+
 ## ПРЕВРАЩЕНИЕ. Условия те же, что у засады: редко, на виду и не поверх другой
 ## сцены. Разница в том, что засада — это событие на секунду, а фигура остаётся
 ## и ходит: у неё своя походка и свои приёмы, и полминуты — это как раз столько,
@@ -5574,15 +5902,24 @@ func _update_form(delta: float) -> void:
 	#
 	# Считаем именно ВЫХОДЫ, а не время: выход — это то, что игрок переживает
 	# как «он появился», и чередовать надо ровно их.
-	var out_now: bool = monster.visible and monster.mode != "inwall" \
-		and monster.mode != "ambush" and monster.mode != "surfacing"
-	if out_now and not out_seen:
-		outings += 1
-		if outings % 2 == 0 and monster.form_hold <= 0.0 and not dead and not won:
-			_take_human_form()
-	out_seen = out_now
+	# ФИГУРОЙ — НЕ С ПЕРВОЙ СЕКУНДЫ ВЫХОДА. Превращение в начале выхода забирало
+	# у осьминога все хваты: пока добежишь до угла, перед тобой уже фигура.
+	# Первые секунды принадлежат тому телу, которым он вышел, — тогда осьминог
+	# успевает и догнать, и схватить.
+	var out_now: bool = out_since > 0.0
+	if out_now and outings % 2 == 0 and form_out != outings and out_since >= FORM_IN \
+			and monster.form_hold <= 0.0 and monster.form_t <= 0.01 \
+			and not dead and not won:
+		form_out = outings
+		_take_human_form()
 	if forms_left <= 0 or form_cool > 0.0 or dead or won:
 		form_want = -1.0
+		return
+	# ЭТОТ ВЫХОД — ОСЬМИНОГА, и расписание его не забирает. Ниже лежит запасной
+	# путь: если фигуры долго не было, игра ставит её перед игроком сама. Он не
+	# должен перебивать тело, с которым тварь вышла, — иначе осьминог снова
+	# нигде не доживает до хвата. Дождётся, пока она уйдёт в камень.
+	if out_now and outings % 2 == 1:
 		return
 	# ВЗВЕДЕНО — И ДАЛЬШЕ ИГРА ДОБИВАЕТСЯ ВЫХОДА САМА.
 	#
@@ -6192,6 +6529,15 @@ func _on_revealed() -> void:
 	cine_to = monster.global_position + side * 7.0 + right * 3.0 + Vector3(0.0, 2.6, 0.0)
 	cine = 1
 	cine_t = 0.0
+	# ЧЕМ КОНЧИТСЯ ПОКАЗ, РЕШАЕТСЯ ЗДЕСЬ. Обычно — рывком сквозь стены: он
+	# бежит к тебе оттуда, куда только что смотрела камера, и это долгий страх.
+	# Изредка — рывком в лицо: он не бежит вовсе, а через пару секунд вырастает
+	# перед самым экраном. Первый показ за проход остаётся честным: сначала
+	# игра должна научить, что показ значит погоню, и только потом обмануть.
+	reveals += 1
+	jump_armed = jump_left > 0 and reveals >= 2 and _rng.randf() < JUMP_CHANCE
+	print("[журнал] %.0f с: показ №%d, дальше %s" % [_clock, reveals,
+		"рывок в лицо" if jump_armed else "погоня"])
 	_freeze_player(true)
 	# Интерфейса на время показа нет — как и во время речи твари. Кадр,
 	# в углу которого написано «полотно 1/7», перестаёт быть кадром.
@@ -6237,11 +6583,29 @@ func _on_burst_out() -> void:
 		sfx.hit(10.0)
 		sfx.play_at("roar", monster.global_position, 7.0)
 		sfx.play("scream", 1.0)
+		# РЫВОК В ЛИЦО ЗВУЧИТ ГРОМЧЕ ЛЮБОГО ВЫХОДА. Ему и положено: две секунды
+		# до этого не было ничего, и весь приём держится на том, что этот кадр
+		# приходит в тишину.
+		if jump_now:
+			sfx.sting("face", -1.0)
 	if player_node != null:
-		player_node.shake(4.2, 1.0 if _rng.randf() < 0.5 else -1.0)
+		player_node.shake(6.0 if jump_now else 4.2,
+			1.0 if _rng.randf() < 0.5 else -1.0)
+		# КУДА ИМЕННО ОН ВЫШЕЛ. Словами «перед лицом» проверить нельзя, а
+		# косинус со взглядом и метры — можно, и они уходят в журнал.
+		var to2: Vector3 = monster.global_position - player_node.global_position
+		to2.y = 0.0
+		var fw2: Vector3 = -player_node.global_transform.basis.z
+		fw2.y = 0.0
+		var cosa: float = 0.0
+		if to2.length() > 0.01 and fw2.length() > 0.01:
+			cosa = fw2.normalized().dot(to2.normalized())
+		print("[журнал] %.0f с: %s, до игрока %.1f м, по взгляду %.2f" % [_clock,
+			"РЫВОК В ЛИЦО" if jump_now else "выход в упор", to2.length(), cosa])
 		# Голову ведёт сцена: он вышел сбоку, и без разворота игрок узнает об
 		# этом по звуку, а должен — глазами.
 		player_node.look_force(monster.look_point(), 0.7, 7.0)
+	jump_now = false
 
 
 ## ХОД КАМЕРЫ. Туда — секунда, держим секунду, обратно — семь десятых.
@@ -6270,7 +6634,17 @@ func _update_cine(delta: float) -> void:
 			cine_t = 0.0
 			# Показ кончился — с этого мгновения он несётся.
 			if monster != null:
-				monster.start_rush(0.0)
+				if jump_armed:
+					jump_armed = false
+					jump_left -= 1
+					jump_now = true
+					monster.face_jump(_rng.randf_range(JUMP_WAIT[0], JUMP_WAIT[1]))
+					# И ТИШИНА ПЕРЕД НИМ. Эмбиент ложится на эти две секунды:
+					# удар должен прийти в пустоту, иначе он просто громкий.
+					if sfx != null:
+						sfx.amb_duck(3.2)
+				else:
+					monster.start_rush(0.0)
 		return
 	var k2: float = clampf(cine_t / 0.7, 0.0, 1.0)
 	var e2: float = k2 * k2 * (3.0 - 2.0 * k2)
@@ -6303,18 +6677,27 @@ func _end_cine() -> void:
 func _on_lunged(point_blank: bool) -> void:
 	if dead or won or lab or monster == null or player_node == null:
 		return
+	# ВЫХОД ИЗ КАМНЯ СЛЫШЕН УДАРОМ. Играющий просил именно этого: «пусть во
+	# время погони он тоже уходит в камень и вылазит из камня с громким резким
+	# звуком». Раньше дальний выход был только рёвом — на фоне погони, в которой
+	# и так ревут, он терялся, и нырок читался как «монстр куда-то делся».
+	print("[журнал] %.0f с: вынырнул из камня %s" % [_clock,
+		"вплотную" if point_blank else "спереди"])
 	if point_blank:
 		if sfx != null:
+			sfx.hit(8.0)
 			sfx.play_at("scream", monster.global_position, 2.0)
 			sfx.sting("face", -3.0)
 		if player_node.invuln <= 0.0 and not board.visible:
 			_start_grab(Lang.t("g_mash"), "monster")
 	else:
 		if sfx != null:
-			sfx.play_at("roar", monster.global_position, 3.0)
+			sfx.hit(6.0)
+			sfx.sting("corner", -4.0)
+			sfx.play_at("roar", monster.global_position, 4.0)
 		# Взгляд не отнимаем: она и так впереди. Но тряска даёт понять, что это
 		# не «показалось», а обращение к тебе.
-		player_node.shake(0.55, 0.0)
+		player_node.shake(1.1, 0.0)
 
 
 ## ЗВУК СОЕДИНЕНИЯ. Главное действие игры не звучало НИКАК: игрок соединял
@@ -6916,6 +7299,9 @@ func _on_escaped() -> void:
 		hud.text = Lang.t("h_free3")
 	else:
 		hud.text = Lang.t("h_free")
+	# И ПОЛОТНО, СОРВАННОЕ В НАБЕГЕ, УЕЗЖАЕТ. Строкой ниже, чем «вырвался», —
+	# нарочно: сообщение про полотно важнее, и оно должно остаться последним.
+	_raid_flee_now()
 
 
 func _on_grab_failed() -> void:
@@ -6942,6 +7328,7 @@ func _on_grab_failed() -> void:
 	if monster != null:
 		monster.reach_t = 0.25
 	_capture("lash")
+	_raid_flee_now()
 
 
 ## Два счёта, и это намеренно. streak — поимки подряд чем угодно, сдал полотно и

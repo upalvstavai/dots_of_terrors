@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="VectorWeaponSpec" load_steps=2 format=3]
+[ext_resource type="Script" path="res://scripts/weapon_spec.gd" id="1"]
+[resource]
+script = ExtResource("1")
+title = "Дробовик"
+short_name = "SG6 / BREACHER"
+damage = 19.0
+magazine_size = 6
+fire_interval = 0.78
+reload_seconds = 1.85
+spread_degrees = 3.7
+pellets = 8
+recoil = 2.0
+accent = Color(1, 0.64, 0.30, 1)

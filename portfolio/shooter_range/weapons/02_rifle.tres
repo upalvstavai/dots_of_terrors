@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="VectorWeaponSpec" load_steps=2 format=3]
+[ext_resource type="Script" path="res://scripts/weapon_spec.gd" id="1"]
+[resource]
+script = ExtResource("1")
+title = "Автомат"
+short_name = "AR30 / ASSAULT"
+damage = 24.0
+magazine_size = 30
+fire_interval = 0.105
+reload_seconds = 1.55
+spread_degrees = 1.1
+automatic = true
+recoil = 0.48
+accent = Color(0.31, 0.67, 1, 1)

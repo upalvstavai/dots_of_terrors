@@ -2427,6 +2427,291 @@ func _wave_report(name: String, w2) -> void:
 		100.0 * rms / 32767.0, float(n) / sr])
 
 
+## НАБЕГ НА РИСУЮЩЕГО. Два исхода, и проверять надо оба: успел дорисовать —
+## он должен уйти; не успел — сорвать полотно, схватить, а после освобождения
+## полотно должно стоять уже в другом месте.
+func scene_raid() -> void:
+	say("═══ НАБЕГ НА РИСУЮЩЕГО ═══")
+	if w.board == null or w.monster == null:
+		return
+	w.player_node.invuln = 9999.0
+	set_phase(2)
+	# ПАЛОЧКА В РУКУ. Она лежит на столе в стартовой комнате, а бот сюда
+	# телепортируется — без неё нет ни света, ни мигания, и мерить было бы
+	# нечего. Первый прогон так и показал: свет держался на 25.00 обе секунды,
+	# потому что лампы в руке не было вовсе.
+	w.has_wand = true
+	w.player_node.has_wand = true
+	if w.wand_lamp != null:
+		w.wand_lamp.visible = true
+	if w.wand_view != null:
+		w.wand_view.visible = true
+	# ── ИСХОД ПЕРВЫЙ: УСПЕЛ ──────────────────────────────────────────────
+	w.done = 4
+	if not await _stand_at_canvas():
+		return
+	# Рисуем до половины — до того места, с которого он и срывается.
+	await _draw_until(0.55, 20.0)
+	var t0: float = w._clock
+	while w.raid == 0 and w._clock - t0 < 6.0 and w.board.visible:
+		await w.get_tree().process_frame
+	if w.raid == 0:
+		warn("набег не начался на пятом полотне (точек %d из %d)"
+			% [w.board.next_idx, w.board.n])
+		return
+	var путь: int = w.maze.path_weighted(
+		w.world_to_cell(w.monster.global_position),
+		w.world_to_cell(w.player_node.global_position), 1 << 20, 1).size()
+	say("набег начался: он в %d клетках по коридорам" % путь)
+	# МИГАНИЕ. Снимаем крайние значения света за секунду в начале и позже ещё
+	# раз, у самого конца пути: «медленнее и тусклее» против «чаще и ярче» —
+	# это две пары чисел, а не впечатление.
+	var рано: Array = await _blink_range(1.0)
+	# Дорисовываем — и он должен уйти.
+	await _draw_until(1.1, 30.0)
+	await w.get_tree().create_timer(0.8).timeout
+	say("успел: сдано %d, набег %d, режим твари %s, доля пути %.2f" % [
+		w.done, w.raid, w.monster.mode, w.monster.finale_near])
+	if w.raid != 0 or w.monster.finale_mode:
+		warn("набег не выключился после сданного полотна")
+	if w.monster.mode != "inwall":
+		warn("успел дорисовать, а он не ушёл: режим %s" % w.monster.mode)
+	# ── ИСХОД ВТОРОЙ: НЕ УСПЕЛ ───────────────────────────────────────────
+	# СНАЧАЛА УБИРАЕМ КАРТИНКУ. За сданным полотном показывают кадр чужой
+	# истории, и пока он на экране, набег не начинается — это правило игры, а
+	# не помеха: набег поверх картинки был бы набегом, которого не видно.
+	if w.vision_ui != null and w.vision_ui.visible:
+		w.vision_ui.visible = false
+		w._on_vision_closed()
+		await w.get_tree().process_frame
+	w.done = 6
+	w.player_node.invuln = 0.0
+	if not await _stand_at_canvas():
+		return
+	await _draw_until(0.55, 20.0)
+	t0 = w._clock
+	while w.raid == 0 and w._clock - t0 < 6.0 and w.board.visible:
+		await w.get_tree().process_frame
+	if w.raid == 0:
+		warn("набег не начался на седьмом полотне")
+		return
+	var где0: Vector2i = w.canv_cells[w.done]
+	var поздно: Array = []
+	# Дальше НЕ рисуем: пусть дойдёт.
+	t0 = w._clock
+	while w.raid != 0 and w._clock - t0 < 45.0:
+		await w.get_tree().process_frame
+		if w.monster.finale_near > 0.7 and поздно.is_empty():
+			поздно = await _blink_range(1.0)
+	say("мигание палочки: в начале %s, у конца %s (тускло, ярко, вспышек)"
+		% [str(рано), str(поздно)])
+	if рано.size() >= 3 and поздно.size() >= 3:
+		if float(поздно[1]) <= float(рано[1]):
+			warn("к концу палочка не стала ярче: было %.2f, стало %.2f"
+				% [float(рано[1]), float(поздно[1])])
+		if int(поздно[2]) <= int(рано[2]):
+			warn("к концу палочка не стала мигать чаще: было %d, стало %d"
+				% [int(рано[2]), int(поздно[2])])
+	say("дошёл за %.0f с: хват %s, полотно к переезду %s" % [w._clock - t0,
+		str(w.grab_ui.visible), str(w.raid_flee)])
+	if not w.grab_ui.visible:
+		warn("дошёл, но хвата нет")
+	# Вырываемся — и смотрим, уехало ли полотно.
+	if w.grab_ui.visible:
+		w.grab_ui._end(true)
+	await w.get_tree().create_timer(0.5).timeout
+	var где1: Vector2i = w.canv_cells[w.done]
+	say("полотно было в %s, стало в %s" % [str(где0), str(где1)])
+	if где0 == где1:
+		warn("полотно не ушло после сорванного набега")
+
+
+## Встать у нынешнего полотна и открыть его. Пешком бот туда идёт минуту и
+## нередко не доходит вовсе — а меряем мы не его ходьбу.
+func _stand_at_canvas() -> bool:
+	if w.done >= w.canv_cells.size():
+		return false
+	w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done],
+		PlayerScript.STAND_Y)
+	await w.get_tree().process_frame
+	w._open_board()
+	var ждём: float = 0.0
+	while not w.board.visible and ждём < 6.0:
+		await w.get_tree().process_frame
+		ждём += w.get_process_delta_time()
+	if not w.board.visible:
+		warn("полотно %d не открылось" % (w.done + 1))
+		return false
+	return true
+
+
+## Соединять точки, пока не пройдена доля рисунка (или пока не кончится срок).
+## Доля больше единицы — значит до конца.
+func _draw_until(frac: float, limit: float) -> void:
+	var b = w.board
+	var t: float = 0.0
+	while b.visible and t < limit:
+		if b.n > 0 and float(b.next_idx) / float(b.n) >= frac:
+			return
+		await w.get_tree().process_frame
+		t += w.get_process_delta_time()
+		for d in b.dots:
+			if int(d["idx"]) == b.next_idx and not bool(d["done"]):
+				if not b.blocked(int(d["idx"])):
+					b._click(b._dot_pos(d))
+				break
+
+
+## Крайние значения света палочки за столько секунд: [тусклее всего, ярче всего,
+## сколько раз мигнуло].
+func _blink_range(seconds: float) -> Array:
+	var lo: float = 1e9
+	var hi: float = -1e9
+	var было: int = w.raid_n
+	var t: float = 0.0
+	while t < seconds:
+		await w.get_tree().process_frame
+		t += w.get_process_delta_time()
+		if w.wand_lamp == null:
+			continue
+		lo = minf(lo, w.wand_lamp.light_energy)
+		hi = maxf(hi, w.wand_lamp.light_energy)
+	return [snappedf(lo, 0.01), snappedf(hi, 0.01), w.raid_n - было]
+
+
+## РЫВОК В ЛИЦО. Показ камерой, две секунды пустоты — и он перед лицом. Три
+## вопроса, на которые нельзя ответить словами: пропадает ли он на эти секунды,
+## выходит ли ИМЕННО СПЕРЕДИ (косинус со взглядом) и как близко.
+func scene_face_jump() -> void:
+	say("═══ РЫВОК В ЛИЦО ═══")
+	var m = w.monster
+	if m == null or w.player_node == null:
+		return
+	w.player_node.invuln = 9999.0
+	set_phase(2)
+	m.allow_emerge = true
+	m.first_out = false
+	# НЕ В УБЕЖИЩЕ И НЕ У МОЛЬБЕРТА. Стартовая комната — убежище целиком, а
+	# рывок в лицо туда нарочно не ходит. У мольберта же само открывается
+	# полотно, тварь переходит в обход вокруг рисующего — и рывок повисает
+	# незаконченным: первый прогон так и показал «за восемь секунд не вышел».
+	# Нужен обычный тупик: ни круга, ни холста.
+	for c in w.maze.dead_ends():
+		if w.safe_cells.has(c) or w.canv_cells.has(c):
+			continue
+		w.player_node.global_position = w.cell_to_world(c, PlayerScript.STAND_Y)
+		# И ЛИЦОМ В КОРИДОР, А НЕ В СТЕНУ. Телепортированный бот смотрел куда
+		# придётся, и в тупике это означало «в стену в двух метрах»: приём
+		# честно уходил в запасную ветку, а замер показывал не его.
+		for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var n: Vector2i = c + d
+			if w.maze.is_wall(n.x, n.y):
+				continue
+			var to: Vector3 = w.cell_to_world(n, 0.0) - w.cell_to_world(c, 0.0)
+			w.player_node.yaw = atan2(-to.x, -to.z)
+			w.player_node.rotation = Vector3(0.0, w.player_node.yaw, 0.0)
+			break
+		break
+	await w.get_tree().process_frame
+	await w.get_tree().process_frame
+	# ПОКАЗ — СИЛОЙ, а рывок взводим следом: доля рывков случайная, и ждать
+	# нужного броска монетки значит мерить монетку, а не приём.
+	m._begin_surface(w.player_node.global_position, false)
+	w.jump_armed = true
+	var t0: float = w._clock
+	while w.cine != 0 and w._clock - t0 < 12.0:
+		await w.get_tree().process_frame
+	say("показ кончился через %.1f с, тварь видно: %s, счёт рывка %.1f с" % [
+		w._clock - t0, str(m.visible), m.jump_t])
+	if m.visible:
+		warn("после показа он остался на виду — рывка в лицо не вышло")
+	# Ждём выхода и считаем, сколько длилась пустота.
+	var t1: float = w._clock
+	while not m.visible and w._clock - t1 < 8.0:
+		await w.get_tree().process_frame
+	var пусто: float = w._clock - t1
+	if not m.visible:
+		warn("за 8 с после показа он так и не вышел")
+		return
+	# Даём ему ровно доехать: выезд длится 0.30 с, а дальше начинается обычная
+	# погоня, и он сходит с точки — мерить надо приём, а не первый шаг погони.
+	await w.get_tree().create_timer(0.32).timeout
+	var to: Vector3 = m.global_position - w.player_node.global_position
+	to.y = 0.0
+	var fwd: Vector3 = -w.player_node.global_transform.basis.z
+	fwd.y = 0.0
+	var cosa: float = 0.0
+	if to.length() > 0.01 and fwd.length() > 0.01:
+		cosa = fwd.normalized().dot(to.normalized())
+	say("пустота %.1f с, вышел в %.1f м, по взгляду %.2f (1.0 — прямо в лицо)" % [
+		пусто, to.length(), cosa])
+	if пусто < 0.8 or пусто > 4.0:
+		warn("пустота перед рывком %.1f с — это не «через пару секунд»" % пусто)
+	if to.length() > 5.0:
+		warn("вышел за %.1f м — это не «перед лицом»" % to.length())
+	if cosa < 0.35:
+		warn("вышел мимо взгляда (косинус %.2f): игрок этого не увидит" % cosa)
+	await shot("рывок_в_лицо")
+	m.retreat_to_wall(1.0, 1.0)
+
+
+## ЗАТИШЬЕ: ЖДЁТ ЛИ ОН ПОЛОТНА. Стоим на месте нарочно — навигация бота тут ни
+## при чём, а меряем ровно одно: держит ли мир тварь в камне, пока не сдано
+## следующее полотно, и выходит ли она вскоре после того, как оно сдано.
+func scene_calm() -> void:
+	say("═══ ЗАТИШЬЕ ═══")
+	var m = w.monster
+	if m == null:
+		return
+	w.player_node.invuln = 9999.0
+	set_phase(2)
+	m.allow_emerge = true
+	# СОСТОЯНИЕ «ВСТРЕЧА ТОЛЬКО ЧТО КОНЧИЛАСЬ» — СТАВИМ РУКАМИ. Настоящая
+	# встреча тянет за собой показ, рывок и погоню, и меряли бы мы их, а не
+	# затишье: первый же прогон так и вышел — тварь вылезла «вопреки затишью»,
+	# хотя это доигрывался рывок, начатый до него.
+	m.retreat_to_wall(1.0, 1.0)
+	m.first_out = false
+	m.pressure = 0.0
+	m.calm_t = 0.0
+	w.outings = 1
+	w.out_gap = 99.0
+	w.calm_armed = false
+	var t0: float = w._clock
+	await w.get_tree().process_frame
+	await w.get_tree().process_frame
+	say("затишье взведено: %s (полотен %d)" % [str(m.hold_out), w.done])
+	# БЕЗ ПОЛОТНА ОН ВЫХОДИТЬ НЕ ДОЛЖЕН. Ждём вдвое дольше обычного срока
+	# давления (PRESS_OUT ≈ 46 с): если вышел — затишье не работает.
+	t0 = w._clock
+	var вышел: bool = false
+	while w._clock - t0 < 95.0:
+		await w.get_tree().process_frame
+		if m.visible and m.mode != "inwall":
+			вышел = true
+			break
+	if вышел:
+		warn("вышел через %.0f с, хотя полотно не сдано (затишье %s)" % [
+			w._clock - t0, str(m.hold_out)])
+	else:
+		say("без полотна за 95 с не вышел ни разу, давление %.0f из %.0f" % [
+			m.pressure, m.press_need])
+	# А ТЕПЕРЬ ПОЛОТНО СДАНО. Считаем, через сколько он появится: несколько
+	# секунд — то, что надо; мгновенно — значит он ждал за углом.
+	w.done += 1
+	t0 = w._clock
+	while w._clock - t0 < 60.0:
+		await w.get_tree().process_frame
+		if m.visible and m.mode != "inwall":
+			break
+	if m.visible and m.mode != "inwall":
+		say("после сданного полотна вышел через %.0f с" % [w._clock - t0])
+	else:
+		warn("после сданного полотна не вышел и за минуту")
+	m.retreat_to_wall(1.0, 1.0)
+	w.done -= 1
+
+
 ## ВРЕМЕННАЯ СЦЕНА: открыть холст и снять кадр. Подсказку «E — бросить» надо
 ## увидеть, а не поверить, что она нарисована.
 func scene_board_shot() -> void:
@@ -2887,6 +3172,12 @@ func run(want: Array) -> void:
 	# скрыт», и лента там читается иначе. Играющий увидел её как поломку
 	# («цвета чёрные, пока не попал по точке») — значит ленту надо уметь
 	# снимать отдельно, а не выяснять это с его слов.
+	if want.has("набег"):
+		await scene_raid()
+	if want.has("рывок"):
+		await scene_face_jump()
+	if want.has("затишье"):
+		await scene_calm()
 	if want.has("слепая"):
 		w.done = 3
 		await scene_board_shot()
