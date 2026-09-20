@@ -2541,6 +2541,13 @@ func _build_ui() -> void:
 	if RoomScript.done or OS.get_cmdline_user_args().has("изкомнаты"):
 		start_ui.skip()
 		_from_room = true
+	# «комната» — сразу в пролог, минуя заставку. Смотровые ключи детской
+	# («дыра», «улица», «блокнот») живут в Room.gd, а попасть туда можно было
+	# только руками через кнопку: проверить детскую своими силами не выходило.
+	# Меняем сцену отложенно — мир должен сначала собраться целиком, иначе
+	# полукадр недостроенного мира успевает уйти в _process.
+	if OS.get_cmdline_user_args().has("комната") and not RoomScript.done:
+		get_tree().change_scene_to_file.call_deferred("res://room.tscn")
 	start_ui.viewer.connect(func() -> void:
 		get_tree().change_scene_to_file("res://viewer.tscn"))
 	# Стартовый экран прячем, пока читают титры: два полноэкранных окна друг

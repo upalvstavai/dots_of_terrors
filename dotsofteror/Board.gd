@@ -119,7 +119,9 @@ func open(shape_data: Dictionary, canvas_index: int, fear: float, stage: int, se
 	_rng.seed = seed_value
 	shape = shape_data
 	index = canvas_index
-	teach = canvas_index < TEACH_N and not final and not tutor
+	# И В ДЕТСКОЙ ТОЖЕ. Блокнот — это первое знакомство с правилом, и номера
+	# там нужнее всего: играющий (20.09) просил, чтобы и он читался обучением.
+	teach = (canvas_index < TEACH_N or tutor) and not final
 	madness_stage = stage
 	tremor = clampf(fear, 1.0, Shapes.FEAR_MAX)
 	mods = {}
@@ -720,11 +722,22 @@ func _draw_hud(b: Rect2) -> void:
 				# что вообще известно про порядок. Значит её и надо забирать:
 				# на поздних полотнах видно только СЛЕДУЮЩИЙ цвет, а что будет
 				# дальше — нет. Считать наперёд нельзя, можно только идти.
-				if mods.has("blind") and i > next_idx:
+				# СЛЕДУЮЩИЕ ДВА ВИДНО ВСЕГДА. Помеха «порядок скрыт» закрывала
+				# всю ленту вперёд, и на кадре это читалось поломкой: «порядок
+				# цветов был чёрный и становился нужного цвета, только когда
+				# попал по точке». Скрываем дальние, ближние показываем —
+				# считать наперёд всё равно нельзя, а понять, что происходит,
+				# можно.
+				if mods.has("blind") and i > next_idx + 1:
 					draw_rect(Rect2(x0 + i * (sw + 8.0), y0, sw, sw),
 						Color(0.13, 0.12, 0.14))
 					draw_rect(Rect2(x0 + i * (sw + 8.0), y0, sw, sw),
 						Color(0.30, 0.27, 0.24, 0.6), false, 1.0)
+					# ВОПРОС, А НЕ ПУСТОТА. Чёрный квадрат читается погасшим
+					# интерфейсом; знак вопроса говорит, что цвет скрыт нарочно.
+					draw_string(f, Vector2(x0 + i * (sw + 8.0), y0 + sw - 5.0),
+						"?", HORIZONTAL_ALIGNMENT_CENTER, sw, 14,
+						Color(0.62, 0.58, 0.52, 0.8))
 					break
 				draw_rect(Rect2(x0 + i * (sw + 8.0), y0, sw, sw), col)
 				if i == next_idx:
