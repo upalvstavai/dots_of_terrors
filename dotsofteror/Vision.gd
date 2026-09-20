@@ -155,21 +155,59 @@ func _draw() -> void:
 		Color(0.52, 0.51, 0.49, f))
 
 
-## Содержимое листа. Рисуется в СВОИХ координатах — от (0,0) до size — и всё,
-## что выходит за край, обрезается узлом.
+# ─────────────────────────── проявление ───────────────────────────
+
+## ПРОЯВЛЯЕТСЯ, А НЕ ПОЯВЛЯЕТСЯ. Картинка не включается разом: сверху вниз
+## идёт полоса, за которой бумага «намокает» и рисунок проступает. Это та же
+## мысль, что и у прожига полотна: игрок должен видеть, как оно происходит.
 func _draw_sheet() -> void:
 	var f: float = _fade()
 	var b := Rect2(Vector2.ZERO, _sheet_node.size)
 	_sheet_node.draw_rect(b, Color(0.035, 0.035, 0.045, f))
+	var tex: Texture2D = _tex_for(index)
 	var k: float = _k()
-	_rng.seed = 4100 + index
-	match index:
-		0: _взрыв(b, k, f)
-		1: _существо(b, k, f)
-		_: _взрыв(b, k, f)
-	# Подтёки поверх рисунка: краска свежая и не держится на холсте.
+	if tex != null:
+		# ВПИСЫВАЕМ ЦЕЛИКОМ, не растягивая: у чужой картинки своё отношение
+		# сторон, и растянутое лицо выдаёт подделку сильнее всего.
+		var ts := Vector2(tex.get_width(), tex.get_height())
+		var scale: float = minf(b.size.x / ts.x, b.size.y / ts.y)
+		var вид := Rect2(b.position + (b.size - ts * scale) * 0.5, ts * scale)
+		# Уже проявленная часть: сверху вниз.
+		var h: float = вид.size.y * k
+		_sheet_node.draw_texture_rect_region(tex,
+			Rect2(вид.position, Vector2(вид.size.x, h)),
+			Rect2(Vector2.ZERO, Vector2(ts.x, ts.y * k)),
+			Color(1, 1, 1, f))
+		# Полоса, за которой идёт проявление: мокрая бумага светится краской.
+		if k < 1.0:
+			var y: float = вид.position.y + h
+			_sheet_node.draw_rect(Rect2(вид.position.x, y - 2.0, вид.size.x, 3.0),
+				Color(PAINT.r, PAINT.g, PAINT.b, 0.55 * f))
+			_свет(Vector2(вид.position.x + вид.size.x * 0.5, y),
+				вид.size.x * 0.5, Color(PAINT.r, PAINT.g, PAINT.b, f), 0.35)
+		# ЗЕРНО И ВИНЬЕТКА. Чужая картинка ложится в игру только если её
+		# немного испортить: бумага не бывает идеально ровной, а свет в этой
+		# игре всегда падает пятном.
+		_rng.seed = 900 + index
+		for i in 90:
+			var p := вид.position + Vector2(_rng.randf() * вид.size.x,
+				_rng.randf() * вид.size.y * k)
+			_sheet_node.draw_circle(p, 0.6 + _rng.randf() * 1.6,
+				Color(0.0, 0.0, 0.0, 0.05 + _rng.randf() * 0.10))
+		for i in 10:
+			var u: float = float(i) / 10.0
+			var m: float = вид.size.x * 0.10 * (1.0 - u)
+			_sheet_node.draw_rect(Rect2(вид.position, Vector2(m, вид.size.y)),
+				Color(0, 0, 0, 0.05 * f))
+			_sheet_node.draw_rect(Rect2(вид.position.x + вид.size.x - m, вид.position.y,
+				m, вид.size.y), Color(0, 0, 0, 0.05 * f))
+	else:
+		# Файла нет — лист остаётся пустым, и мы просто не задерживаем игру.
+		# Так игра живёт и без картинок: они добавляются по одной.
+		_sheet_node.draw_rect(b, Color(0.05, 0.05, 0.06, f))
+	# Подтёки поверх: краска свежая и не держится на холсте.
 	for d in _drips:
-		var a: float = clampf(1.0 - float(d["t"]) / 3.0, 0.0, 1.0) * 0.5 * f
+		var a: float = clampf(1.0 - float(d["t"]) / 3.0, 0.0, 1.0) * 0.45 * f
 		var от := Vector2(float(d["x"]), float(d["y"]))
 		var до := от + Vector2(0.0, float(d["len"])
 			* clampf(float(d["t"]) * 0.8, 0.0, 1.0))
@@ -177,166 +215,29 @@ func _draw_sheet() -> void:
 		_sheet_node.draw_circle(до, float(d["w"]) * 0.8, Color(PAINT.r, PAINT.g, PAINT.b, a))
 
 
-# ─────────────────────────── инструменты рисования ───────────────────────────
-
-## Штрих от руки: прямая, но с дрожью и разной толщиной по длине. Ровная
-## линия читается чертежом, а здесь рисовал человек.
-func _штрих(a: Vector2, b: Vector2, w: float, col: Color, дрожь: float = 2.0) -> void:
-	var n: int = maxi(3, int(a.distance_to(b) / 14.0))
-	var pts := PackedVector2Array()
-	for i in n + 1:
-		var u: float = float(i) / float(n)
-		var p: Vector2 = a.lerp(b, u)
-		var нрм := (b - a).orthogonal().normalized()
-		p += нрм * sin(u * 6.0 + float(_rng.randi() % 7)) * дрожь * sin(u * PI)
-		pts.append(p)
-	_sheet_node.draw_polyline(pts, col, w)
-
-
-## Пятно краски: неровный многоугольник вокруг точки. Из них собираются тела,
-## огонь и дым — всё, что не линия.
-func _пятно(c: Vector2, r: float, col: Color, рв: float = 0.35, углов: int = 13) -> void:
-	var pts := PackedVector2Array()
-	for i in углов:
-		var a: float = TAU * float(i) / float(углов)
-		var rr: float = r * (1.0 - рв * 0.5 + _rng.randf() * рв)
-		pts.append(c + Vector2(cos(a), sin(a)) * rr)
-	_sheet_node.draw_colored_polygon(pts, col)
-
-
-## Свечение мягким пятном. Кольца кругов давали видимые ступени — на кадре это
-## читалось мишенью, а не светом.
+## Свечение мягким пятном — то же, что у лампы на полотне.
 func _свет(c: Vector2, r: float, col: Color, сила: float = 0.5) -> void:
-	_sheet_node.draw_texture_rect(_glow, Rect2(c - Vector2(r, r), Vector2(r * 2.0, r * 2.0)),
-		false, Color(col.r, col.g, col.b, col.a * сила))
+	_sheet_node.draw_texture_rect(_glow,
+		Rect2(c - Vector2(r, r), Vector2(r * 2.0, r * 2.0)), false,
+		Color(col.r, col.g, col.b, col.a * сила))
 
 
-# ─────────────────────────── листы ───────────────────────────
-
-## 1/7. ЧИСТЫЙ ВЗРЫВ. Ни земли, ни людей: только свет, который разорвало
-## изнутри. Это первое, что было, и объяснять его некому.
-func _взрыв(b: Rect2, k: float, f: float) -> void:
-	var c := b.position + b.size * Vector2(0.5, 0.52)
-	var R: float = b.size.y * 0.42
-	# Ядро.
-	_свет(c, R * 1.9 * k, Color(PAINT.r, PAINT.g, PAINT.b, f), 0.55)
-	_пятно(c, R * 0.30 * k, Color(0.85, 1.0, 0.92, 0.9 * f), 0.30)
-	_пятно(c, R * 0.20 * k, Color(1.0, 1.0, 1.0, 0.95 * f), 0.25)
-	# Лучи: длинные и короткие вперемешку, все из одной точки.
-	var лучей: int = 34
-	for i in лучей:
-		var a: float = TAU * float(i) / float(лучей) + _rng.randf_range(-0.05, 0.05)
-		var дл: float = R * _rng.randf_range(0.5, 1.5) * k
-		var w: float = 1.0 + _rng.randf() * 2.6
-		var от: Vector2 = c + Vector2(cos(a), sin(a)) * R * 0.18
-		var до: Vector2 = c + Vector2(cos(a), sin(a)) * дл
-		_штрих(от, до, w, Color(PAINT.r, PAINT.g, PAINT.b, (0.35 + _rng.randf() * 0.5) * f), 3.0)
-	# Кольца ударной волны: три, самое дальнее еле видно.
-	for i in 3:
-		var rr: float = R * (0.55 + float(i) * 0.42) * k
-		var кольцо := PackedVector2Array()
-		for j in 41:
-			var a2: float = TAU * float(j) / 40.0
-			кольцо.append(c + Vector2(cos(a2), sin(a2)) * rr
-				* (0.94 + _rng.randf() * 0.12))
-		_sheet_node.draw_polyline(кольцо, Color(PAINT.r, PAINT.g, PAINT.b,
-			(0.30 - float(i) * 0.08) * f), 1.6)
-	# Осколки: точки, разлетающиеся наружу. Те самые точки, которые он соединял.
-	for i in 40:
-		var a3: float = _rng.randf() * TAU
-		var d3: float = R * _rng.randf_range(0.7, 1.9) * k
-		var p := c + Vector2(cos(a3), sin(a3)) * d3
-		if not b.has_point(p):
-			continue
-		_sheet_node.draw_circle(p, 1.2 + _rng.randf() * 2.2,
-			Color(PAINT.r, PAINT.g, PAINT.b, (0.3 + _rng.randf() * 0.5) * f))
+## Картинка листа. Файлы кладутся в tex/ и называются лист_1 … лист_7; формат
+## любой из тех, что понимает Godot (png, jpg, webp). Нет файла — нет и показа:
+## игра от этого не ломается, картинки можно добавлять по одной.
+static func путь(n: int) -> String:
+	return "res://tex/лист_%d.png" % (n + 1)
 
 
-## 2/7. СВЕТ И ТО, ЧТО В НЁМ. Бесформенное тело почти во весь лист, синие
-## глаза — те же, что смотрят из стен лабиринта, — и кулак, идущий в лицо
-## смотрящему. Кулак нарисован КРУПНЕЕ всего остального: так рисуют то, что
-## помнят, а не то, что видели.
-func _существо(b: Rect2, k: float, f: float) -> void:
-	var c := b.size * Vector2(0.5, 0.5)
-	# СВЕТ ЗА СПИНОЙ. Без него тело — просто клякса; с ним оно силуэт, а силуэт
-	# страшнее любой прорисовки. Жёсткого круга нет: только мягкое пятно.
-	_свет(c + Vector2(0.0, -b.size.y * 0.10), b.size.y * 1.25 * k,
-		Color(0.88, 1.0, 0.96, f), 0.85)
-	_свет(c + Vector2(0.0, -b.size.y * 0.10), b.size.y * 0.55 * k,
-		Color(1.0, 1.0, 1.0, f), 0.55)
-	# ТЕЛО. Девять пятен друг на друге, каждое со своим смещением и рваным
-	# краем: ни одной узнаваемой формы, и ни одного прямого угла. Оно не
-	# человек и не зверь — в этом всё дело.
-	# СПЛОШНОЙ, А НЕ ПОЛУПРОЗРАЧНЫЙ. При альфе 0.62 края пятен просвечивали
-	# друг сквозь друга, и тело читалось стопкой серых листов.
-	var тело := Color(0.015, 0.035, 0.030, f)
-	var ц := c + Vector2(0.0, b.size.y * 0.12)
-	for i in 9:
-		var сдв := Vector2(_rng.randf_range(-0.24, 0.24) * b.size.x,
-			_rng.randf_range(-0.12, 0.18) * b.size.y)
-		_пятно(ц + сдв, b.size.y * _rng.randf_range(0.17, 0.32) * k, тело, 0.5, 21)
-	# Штрихи по краю: тело не вырезано ножницами, оно лохматое.
-	for i in 22:
-		var a: float = _rng.randf() * TAU
-		var r0: float = b.size.y * _rng.randf_range(0.26, 0.34)
-		var от := ц + Vector2(cos(a), sin(a) * 0.8) * r0
-		_штрих(от, от + Vector2(cos(a), sin(a) * 0.8)
-			* b.size.y * _rng.randf_range(0.03, 0.12) * k,
-			1.4 + _rng.randf() * 2.2, Color(0.02, 0.05, 0.045, 0.75 * f), 2.0)
-	# ГЛАЗА. Два, синие, на разной высоте: ровная пара читается маской.
-	var гл: float = b.size.y * 0.042 * k
-	for сд in [-1.0, 1.0]:
-		var e := ц + Vector2(сд * b.size.x * 0.080, -b.size.y * 0.16
-			+ сд * b.size.y * 0.014)
-		_свет(e, гл * 6.0, Color(EYE.r, EYE.g, EYE.b, f), 0.9)
-		_sheet_node.draw_circle(e, гл, Color(EYE.r, EYE.g, EYE.b, 0.95 * f))
-		_sheet_node.draw_circle(e, гл * 0.42, Color(0.88, 0.96, 1.0, 0.95 * f))
-	# КУЛАК В ЛИЦО. Он ближе всего к смотрящему, поэтому крупнее всего
-	# остального и перекрывает тело: так рисуют то, что помнят, а не то, что
-	# видели. Собран как кулак: масса, четыре костяшки дугой, пальцы под ними
-	# и большой палец сбоку.
-	var кул := b.size * Vector2(0.55, 0.76)
-	var R: float = b.size.y * 0.26 * k
-	var плоть := Color(0.015, 0.035, 0.030, f)
-	for i in 4:
-		_пятно(кул + Vector2(_rng.randf_range(-0.22, 0.22),
-			_rng.randf_range(-0.10, 0.14)) * R, R * _rng.randf_range(0.72, 0.95),
-			плоть, 0.22, 19)
-	for i in 4:
-		var u: float = (float(i) + 0.5) / 4.0
-		var кост := кул + Vector2((u - 0.5) * R * 1.5, -R * (0.62 - abs(u - 0.5) * 0.5))
-		_пятно(кост, R * 0.27, плоть, 0.22, 15)
-		# Пальцы уходят вниз от костяшек: короткие, плотно прижатые.
-		_пятно(кост + Vector2(0.0, R * 0.42), R * 0.21, плоть, 0.25, 13)
-	# Большой палец сбоку, поперёк остальных.
-	_пятно(кул + Vector2(-R * 0.86, R * 0.22), R * 0.30, плоть, 0.30, 15)
-	_пятно(кул + Vector2(-R * 0.55, R * 0.42), R * 0.24, плоть, 0.30, 13)
-	# КОНТУР И КОСТЯШКИ КРАСКОЙ. Чёрное на чёрном не читается ничем, кроме
-	# света: кулак обведён той же краской, которой игрок ведёт линии, и этой
-	# же краской намечены костяшки и борозды между пальцами. Без них в кадре
-	# просто тёмный ком.
-	var обвод := PackedVector2Array()
-	for i in 31:
-		var a7: float = TAU * float(i) / 30.0
-		var rr7: float = R * (1.12 + 0.10 * sin(a7 * 3.0)) * (1.0 if a7 < PI else 0.96)
-		обвод.append(кул + Vector2(cos(a7) * rr7, sin(a7) * rr7 * 0.92))
-	_sheet_node.draw_polyline(обвод, Color(PAINT.r, PAINT.g, PAINT.b, 0.55 * f), 2.4)
-	for i in 4:
-		var u2: float = (float(i) + 0.5) / 4.0
-		var кост2 := кул + Vector2((u2 - 0.5) * R * 1.5, -R * (0.62 - abs(u2 - 0.5) * 0.5))
-		var дуга := PackedVector2Array()
-		for j in 11:
-			var aa: float = PI * (1.05 + float(j) / 10.0 * 0.9)
-			дуга.append(кост2 + Vector2(cos(aa), sin(aa)) * R * 0.30)
-		_sheet_node.draw_polyline(дуга, Color(PAINT.r, PAINT.g, PAINT.b, 0.5 * f), 2.0)
-		# Борозда между пальцами.
-		if i < 3:
-			var м := кул + Vector2((u2 - 0.5 + 0.125) * R * 1.5, -R * 0.18)
-			_штрих(м, м + Vector2(0.0, R * 0.62), 1.6,
-				Color(PAINT.r, PAINT.g, PAINT.b, 0.35 * f), 1.2)
-	# Штрихи движения: сходятся к кулаку, показывая, что он идёт НА тебя.
-	for i in 12:
-		var a6: float = _rng.randf() * TAU
-		var от2 := кул + Vector2(cos(a6), sin(a6)) * R * 1.5
-		_штрих(от2, кул + Vector2(cos(a6), sin(a6)) * R * 2.4,
-			1.0 + _rng.randf() * 1.3, Color(PAINT.r, PAINT.g, PAINT.b, 0.22 * f), 2.5)
+func _tex_for(n: int) -> Texture2D:
+	for ext in ["png", "jpg", "jpeg", "webp"]:
+		var p: String = "res://tex/лист_%d.%s" % [n + 1, ext]
+		if ResourceLoader.exists(p):
+			return load(p) as Texture2D
+	return null
+
+
+## Есть ли вообще картинка для этого полотна. Мир спрашивает ДО показа: пустой
+## лист на семь секунд — худшее, что можно сделать с игроком.
+func есть(n: int) -> bool:
+	return _tex_for(clampi(n, 0, 6)) != null

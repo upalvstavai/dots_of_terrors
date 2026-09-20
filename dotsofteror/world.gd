@@ -3333,7 +3333,7 @@ func _on_solved() -> void:
 		hud.text = Lang.t("h_noexit")
 	# ЧТО БЫЛО ПОД ТОЧКАМИ. Полотно наконец что-то значит: за каждым спрятан
 	# кадр чужой истории, и семь кадров складываются в неё целиком.
-	if vision_ui != null and done >= 1 and done <= 7:
+	if vision_ui != null and done >= 1 and done <= 7 and vision_ui.есть(done - 1):
 		_freeze_player(true)
 		vision_ui.show_one(done - 1)
 
