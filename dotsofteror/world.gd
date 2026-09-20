@@ -298,6 +298,13 @@ var lift_on: bool = false
 ## кончается: всё это время скрежет идёт из СЛУЧАЙНЫХ стен вокруг, и понять,
 ## где она, нельзя. Пять секунд, чтобы бежать, не зная куда.
 const LURK := 5.0
+## А ВОТ ВЫХОДИТ ОН ПОЗЖЕ, ЧЕМ СМОЛКАЕТ СКРЕЖЕТ. Раньше это было одно число:
+## пять секунд в камне — и он снова перед тобой. Играющий (20.09): «он толком
+## в стене не посидел и уже вылазит». Скрежет по-прежнему держит пять секунд —
+## он и должен гнать с места, — а сам выход отодвинут втрое: за это время можно
+## добежать до убежища или хотя бы разорвать дистанцию, и «вырвался» наконец
+## что-то значит.
+const LURK_BACK := [11.0, 17.0]
 ## СКОЛЬКО ОН ЕЩЁ МЕДЛЕННЫЙ ПОСЛЕ ВЫХОДА ИЗ КАМНЯ. Столько, чтобы от места
 ## хвата добежать до ближайшего поворота и дальше, — а не до самого убежища.
 const SLOW_AFTER := 9.0
@@ -381,6 +388,11 @@ var raid_done: Array[int] = []    ## на каких полотнах уже б�
 var raid_ph: float = 0.0          ## фаза мигания палочки
 var raid_n: int = -1              ## номер последней вспышки: по нему щёлкает звук
 var raid_flee: bool = false       ## сорванное полотно должно уйти на другое место
+var no_canv_said: bool = false    ## уже сказали, что рисовать во время погони нельзя
+## ТОЛЬКО ДЛЯ СТЕНДА: снять запрет на полотно во время погони. Нужен затем, что
+## запрет меняет ВЕСЬ ход прохода, и без выключателя нельзя отличить «правило
+## мешает пройти игру» от «бот не умеет по нему играть».
+var no_chase_lock: bool = false
 var was_chasing: bool = false     ## он гнался в прошлом кадре
 var chase_sting_t: float = 0.0    ## откат удара «началась погоня»
 var form_cool: float = 0.0
@@ -429,6 +441,11 @@ const RAID_AT := [4, 6]
 ## Обычная яркость шарика на кончике палочки. Держим числом, а не «шесть в двух
 ## местах»: мигание набега возвращает её после себя, и разойтись им нельзя.
 const BEAD_E := 6.0
+## РАЗМЕРЫ ПАЛОЧКИ. Одни на всю игру — см. _wand_prop.
+const WAND_R_TOP := 0.018
+const WAND_R_BOT := 0.026
+const WAND_LEN := 0.46
+const WAND_BEAD_R := 0.026
 const RAID_PART := 0.40
 const RAID_CELLS := 11
 const RAID_SPEED := 0.92
@@ -703,6 +720,16 @@ func _ready() -> void:
 		into_layer.add_child(into_rect)
 		add_child(into_layer)
 		into_t = 0.55
+		# И ПЕРВАЯ МЫСЛЬ ТОГО, КТО СЮДА УПАЛ. До сих пор лабиринт начинался
+		# строкой «ПОЛОТНО 1/7» — то есть заданием, а не местом. Играющий
+		# (20.09) попросил дать герою сказать своё: он провалился сквозь пол
+		# чужой детской и не понимает, где он.
+		hud.text = Lang.t("h_fallen")
+		get_tree().create_timer(6.0).timeout.connect(func() -> void:
+			# Только если строку с тех пор никто не перебил: иначе поверх
+			# «ОНО ИДЁТ» вернулся бы счёт полотен.
+			if hud != null and hud.text == Lang.t("h_fallen"):
+				_update_hud())
 	_apply_carry()
 	# ЧТО НА ХОЛСТЕ, ВИДНО ИЗДАЛЕКА. Полотно в коридоре было пустым зелёным
 	# прямоугольником на трёх палках: играющий (20.09) так и описал — «три
@@ -1139,12 +1166,27 @@ func _climb_view(cell: Vector2i) -> void:
 	# снизу лезла светлая полоса там, где должен быть камень. Четыре тёмные
 	# стенки закрывают этот зазор — и заодно объясняют, сквозь что ты вылез.
 	var shaft := _flat_mat(Color(0.09, 0.09, 0.10))
-	var sh_h: float = gy - wall_height
+	# КРАЯ ДЫРЫ ДРОЖАЛИ, и дело было не в камне, а в арифметике.
+	#
+	# Облицовка колодца шла ровно от потолка лабиринта до наружной земли:
+	# wall_height .. gy. Но земля кладётся плитой толщиной 0.4 с верхом ровно на
+	# gy — то есть ВЕРХНЯЯ ГРАНЬ облицовки и верхняя грань снега оказывались в
+	# одной плоскости, и по всему ободу дыры видеокарта каждый кадр заново
+	# решала, что из них ближе. Это и есть дрожь: она всегда ходит по стыку двух
+	# совпавших плоскостей. Снизу так же совпадали низ облицовки и верх потолка.
+	#
+	# Разводим обе плоскости: верх уводим под снег на восемь сантиметров, низ
+	# опускаем в потолок на пятнадцать. Совпадений не остаётся ни одного, а
+	# видно ровно то же самое.
+	var sh_top: float = gy - 0.08
+	var sh_bot: float = wall_height - 0.15
+	var sh_h: float = sh_top - sh_bot
+	var sh_y: float = (sh_top + sh_bot) * 0.5
 	for w2 in [
-			[Vector3(gap * 2.2, sh_h, 0.2), Vector3(p.x, wall_height + sh_h * 0.5, p.z - gap)],
-			[Vector3(gap * 2.2, sh_h, 0.2), Vector3(p.x, wall_height + sh_h * 0.5, p.z + gap)],
-			[Vector3(0.2, sh_h, gap * 2.2), Vector3(p.x - gap, wall_height + sh_h * 0.5, p.z)],
-			[Vector3(0.2, sh_h, gap * 2.2), Vector3(p.x + gap, wall_height + sh_h * 0.5, p.z)]]:
+			[Vector3(gap * 2.2, sh_h, 0.2), Vector3(p.x, sh_y, p.z - gap)],
+			[Vector3(gap * 2.2, sh_h, 0.2), Vector3(p.x, sh_y, p.z + gap)],
+			[Vector3(0.2, sh_h, gap * 2.2), Vector3(p.x - gap, sh_y, p.z)],
+			[Vector3(0.2, sh_h, gap * 2.2), Vector3(p.x + gap, sh_y, p.z)]]:
 		_unlit_box(w2[0], w2[1], shaft)
 	# Дорога, уходящая вдаль: по ней глаз и уходит за горизонт.
 	# Дорога — накатанная колея в снегу, а не чёрный асфальт: зимой чистого
@@ -1395,7 +1437,17 @@ func _fall_shaft(p: Vector3) -> void:
 	# съедали его почти целиком: первый замер дал среднюю 9.7 вместо 8.2, то
 	# есть починки не случилось. Считать надо от пола, а не от неба.
 	lit.light_energy = 5.0
-	lit.light_volumetric_fog_energy = 9.0
+	# СТОЛБА В ВОЗДУХЕ ЗДЕСЬ БЫТЬ НЕ ДОЛЖНО. Объёмный туман рисует луч только
+	# там, где есть чему литься сквозь: у пролома в потолке настоящая дыра, и
+	# столб света в ней — правда. Здесь дыры нет, свет идёт сквозь сплошное
+	# перекрытие — и на высоком качестве (там включается volumetric_fog) над
+	# столом висела светящаяся муть, выходящая из камня. Играющий (20.09):
+	# «у стола светит сверху какой-то свет вроде тумана».
+	#
+	# Луч убираем, а источник света оставляем: без него первый кадр лабиринта
+	# снова станет чёрным. Вместо столба — ТРЕЩИНА в потолке (ниже), чтобы у
+	# света было видимое начало.
+	lit.light_volumetric_fog_energy = 0.0
 	lit.spot_range = wall_height + 2.0
 	lit.spot_angle = 30.0
 	lit.spot_angle_attenuation = 0.9
@@ -1417,8 +1469,40 @@ func _fall_shaft(p: Vector3) -> void:
 	glow.omni_range = cell_size * 2.5
 	glow.omni_attenuation = 1.4
 	glow.shadow_enabled = false
+	# И ОН ТОЖЕ НЕ СВЕТИТ В ТУМАН. Луч у шахты я погасил, а этот шар остался —
+	# и на высоком качестве над столом всё равно стояла светящаяся муть: туман
+	# вокруг лампы даёт её ничуть не хуже, чем конус.
+	glow.light_volumetric_fog_energy = 0.0
 	glow.position = Vector3(p.x, 1.7, p.z)
 	add_child(glow)
+	# САМА ТРЕЩИНА. Три узкие светящиеся полосы под потолком: сверху сквозь
+	# перекрытие пробивается свет ночной детской — той самой, из которой ты
+	# сюда провалился. Не дыра: пролезть в неё нельзя, и это видно по размеру.
+	# ЛОМАНАЯ, А НЕ ТРИ ПАЛКИ. Первый заход положил три прямые полосы крест-
+	# накрест — на кадре это читалось чем угодно, только не трещиной. Трещина
+	# идёт ОДНОЙ линией и ломается на каждом шаге; звенья ставим встык, каждое
+	# со своим поворотом.
+	var crack := _flat_mat(Color(0.46, 0.52, 0.66))
+	var crng := RandomNumberGenerator.new()
+	crng.seed = 4711
+	var at := Vector2(p.x - 0.9, p.z - 0.5)
+	var ang: float = crng.randf_range(-0.3, 0.3)
+	for i in 6:
+		var ln: float = crng.randf_range(0.26, 0.5)
+		ang += crng.randf_range(-0.7, 0.7)
+		var dir := Vector2(cos(ang), sin(ang))
+		var mid: Vector2 = at + dir * ln * 0.5
+		var seg := MeshInstance3D.new()
+		var bm3 := BoxMesh.new()
+		# К концу трещина тоньше: так она читается как разошедшийся шов, а не
+		# как нарисованная полоса.
+		bm3.size = Vector3(ln, 0.02, lerpf(0.055, 0.02, float(i) / 5.0))
+		seg.mesh = bm3
+		seg.mesh.surface_set_material(0, crack)
+		seg.position = Vector3(mid.x, wall_height - 0.03, mid.y)
+		seg.rotation.y = -ang
+		add_child(seg)
+		at += dir * ln
 
 
 func _hole_sun(p: Vector3) -> void:
@@ -1765,6 +1849,68 @@ func _place_player() -> void:
 	print("Игрок поставлен в клетку ", start_cell, " -> ", p.global_position)
 
 
+## ПАЛОЧКА КАК ПРЕДМЕТ МИРА. Одна и та же вещь встречается трижды: в руке, на
+## столе в начале и на полу, когда её выбьют, — и до сих пор это были ТРИ
+## РАЗНЫЕ палочки. На столе лежала толще и десятигранная, со светящимся
+## древком и крупной тусклой бусиной; на полу — ещё толще, восьмигранная и
+## вовсе без бусины; в руке — тонкая, шестнадцатигранная, с ярким огоньком.
+## Играющий (20.09): «на столе палочка выглядит не так, как в руке». Он прав:
+## узнавание предмета — это то, на чём держится «это моя вещь, я её потерял».
+##
+## Теперь размеры, дерево и бусина берутся отсюда, а место и поворот ставит
+## тот, кто вызвал. `glow` добавляет огонёк вокруг — он нужен лежащей палочке,
+## чтобы её вообще можно было найти в темноте.
+func _wand_prop(glow: bool) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = WAND_R_TOP
+	cm.bottom_radius = WAND_R_BOT
+	cm.height = WAND_LEN
+	cm.radial_segments = 16
+	mi.mesh = cm
+	var mat := _tex_material("wood", 3.0, Color(0.30, 0.25, 0.21))
+	mat.uv1_scale = Vector3(2.0, 7.0, 1.0)
+	mat.roughness = 1.0
+	mat.metallic_specular = 0.12
+	if glow:
+		# ЛЕЖАЩАЯ ПАЛОЧКА СЛАБО СВЕТИТСЯ САМА. В руке дереву светиться незачем —
+		# его и так освещает собственная лампа; а на тёмном столе и на полу в
+		# чёрном коридоре несветящееся древко не видно вовсе: на кадре от неё
+		# оставалась одна бусина. Впятеро слабее прежнего — ровно чтобы читался
+		# силуэт, а не «палка-фонарь».
+		mat.emission_enabled = true
+		mat.emission = Color(0.55, 0.62, 0.72)
+		# 0.22 было мало: на кадре от палочки оставалась одна бусина, а игрок
+		# должен увидеть ПАЛОЧКУ. Возвращаемся почти к прежней яркости — она
+		# проверена тем, что её находили, — но теперь светится правильная форма.
+		mat.emission_energy_multiplier = 0.38
+	mi.material_override = mat
+	var bead := MeshInstance3D.new()
+	var bm := SphereMesh.new()
+	bm.radius = WAND_BEAD_R
+	bm.height = WAND_BEAD_R * 2.0
+	bm.radial_segments = 12
+	bm.rings = 8
+	bead.mesh = bm
+	var bmat := StandardMaterial3D.new()
+	bmat.albedo_color = Color(0.92, 0.97, 1.0)
+	bmat.emission_enabled = true
+	bmat.emission = Color(0.80, 0.92, 1.0)
+	bmat.emission_energy_multiplier = BEAD_E
+	bmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	bead.material_override = bmat
+	bead.position = Vector3(0.0, WAND_LEN * 0.5 + WAND_BEAD_R * 1.35, 0.0)
+	mi.add_child(bead)
+	if glow:
+		var gl := OmniLight3D.new()
+		gl.light_energy = 0.9
+		gl.omni_range = 3.2
+		gl.light_color = Color(0.62, 0.72, 0.86)
+		gl.position = bead.position
+		mi.add_child(gl)
+	return mi
+
+
 ## Клетка лабиринта -> точка в мире. Пригодится для полотен, столов и монстра.
 ## Палочка и кусок руки в кадре. Без них игрок — бестелесная камера: свет
 ## берётся ниоткуда, и нечему пачкаться, ломаться и дрожать.
@@ -1818,9 +1964,9 @@ func _build_viewmodel(head: Node3D) -> void:
 
 	var wand := MeshInstance3D.new()
 	var wm := CylinderMesh.new()
-	wm.top_radius = 0.018
-	wm.bottom_radius = 0.026
-	wm.height = 0.46
+	wm.top_radius = WAND_R_TOP
+	wm.bottom_radius = WAND_R_BOT
+	wm.height = WAND_LEN
 	# ВОСЕМЬ СЕГМЕНТОВ — ЭТО ВОСЬМИГРАННИК. На кадре вблизи палочка читалась
 	# гранёной палкой: силуэт ломался ступеньками, и никакая текстура этого не
 	# прячет. Шестнадцать стоят ничего: это одна маленькая сетка на весь экран,
@@ -1846,8 +1992,8 @@ func _build_viewmodel(head: Node3D) -> void:
 	# только на том, что игрок сам догадается. Точка на конце эту связь и делает.
 	var bead := MeshInstance3D.new()
 	var bm2 := SphereMesh.new()
-	bm2.radius = 0.026
-	bm2.height = 0.052
+	bm2.radius = WAND_BEAD_R
+	bm2.height = WAND_BEAD_R * 2.0
 	bm2.radial_segments = 12
 	bm2.rings = 8
 	bead.mesh = bm2
@@ -2809,10 +2955,11 @@ func _update_says() -> void:
 		return
 	if Settings.deaths == 2 and says.try_say("v_count2"):
 		return
-	# Третья реплика появилась вместе с третьей жизнью: без неё счёт обрывался
-	# на «два раза», и последняя поимка приходила молча.
-	if Settings.deaths >= 3 and says.try_say("v_count3"):
-		return
+	# ТРЕТЬЕЙ РЕПЛИКИ НЕТ. Была — «Три. Больше не будет», — и оказалась пустой
+	# угрозой: игра после третьей смерти продолжается, и тварь обещает то, чего
+	# не делает. Играющий (20.09) назвал её бессмысленной, и он прав: у голоса
+	# за четвёртой стеной есть ровно одна сила — говорить правду о том, что
+	# происходит на самом деле.
 	var hh: int = int(Time.get_datetime_dict_from_system()["hour"])
 	if hh >= 2 and hh < 5 and says.try_say("v_night"):
 		return
@@ -3042,6 +3189,20 @@ func _process(delta: float) -> void:
 	if monster != null and grab_ui != null and grab_ui.visible and grab_src == "monster":
 		monster._aim_reach(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0))
 	if monster != null and player_node != null and not won and not lab:
+		# СТРАХОВКА ОТ «СОБАКИ». Пока открыто полотно, тварь ходит кругами
+		# вокруг рисующего (park + prowl) и ни догнать, ни схватить не может —
+		# так и задумано. Снимает это _close_board, но полотно гасили руками
+		# ещё в двух местах: когда холст срывает сама тварь и когда она срывает
+		# дверь в финале. Оттуда тварь выходила НАВСЕГДА ОСТАВШЕЙСЯ в обходе:
+		# ходила за игроком, повторяла его шаги, стояла рядом и не нападала.
+		# Играющий описал это дважды, и оба раза я чинил не то: «он просто за
+		# мной ходит как собака», «стоит вплотную и не атакует».
+		#
+		# Те два места теперь закрывают полотно честно, а эта строка — страховка
+		# на все будущие: обход без открытого полотна не имеет смысла ни в одном
+		# состоянии игры.
+		if monster.parked and monster.prowl and not board.visible:
+			monster.unpark()
 		# Пока игрок рисует, монстр НЕ стоит — он продолжает идти. Но и схватить
 		# не может: захват проверяется только когда игрок в коридоре.
 		# Она должна ЗНАТЬ, что ты рванул, — иначе гонится за твоим шагом, пока
@@ -3093,10 +3254,25 @@ func _process(delta: float) -> void:
 		return
 	if done < n_canv:
 		if _near(canv_cells[done]):
-			if canvas_arm:
+			# ВО ВРЕМЯ ПОГОНИ ПОЛОТНО НЕ ОТКРЫВАЕТСЯ. Оно открывалось само,
+			# стоило подойти, — и это была лазейка: от бегущей за тобой твари
+			# можно было спрятаться в холст, где она ходит кругами и не бьёт.
+			# Полотно — занятие для тишины; пока он гонится, бежать надо, а не
+			# рисовать. Играющий: «убери возможность во время погони заходить
+			# в полотна».
+			if canvas_arm and not _chased_now():
+				no_canv_said = false
 				_open_board()
+			elif canvas_arm and not no_canv_said:
+				# И ГОВОРИМ, ПОЧЕМУ. Полотно открывается само, по близости; не
+				# открывшееся молча читается поломкой — «подошёл, а ничего не
+				# происходит». Одна строка снимает вопрос и заодно говорит, что
+				# делать вместо этого.
+				no_canv_said = true
+				hud.text = Lang.t("h_no_canvas")
 		else:
 			canvas_arm = true
+			no_canv_said = false
 	elif _near(exit_cell):
 		# ВЗВОД, КАК У ПОЛОТЕН. Сорванная дверь засчитывала поимку, а игрок в
 		# этот кадр ещё стоял у выхода — и финал тут же открывался заново:
@@ -3107,6 +3283,37 @@ func _process(delta: float) -> void:
 			_open_finale()
 	else:
 		exit_arm = true
+
+
+## ГОНИТСЯ ЛИ ОН ПРЯМО СЕЙЧАС. Не «вышел» и не «где-то рядом»: именно погоня —
+## он снаружи, идёт за тобой, либо только что нырнул в камень посреди неё.
+func _chased_now() -> bool:
+	if monster == null or no_chase_lock:
+		return false
+	# Метания в камне сразу после хвата — тоже погоня: он не отстал, его просто
+	# нет нигде эти секунды.
+	if lurk_t > 0.0:
+		return true
+	# А вот `fleeing` сюда не годится, хотя и называется побегом: он держится до
+	# убежища или до сорока секунд и остаётся поднятым даже после того, как
+	# тварь ушла в камень. С ним полотно не открывалось бы ещё полминуты
+	# ПОСЛЕ погони — это уже не правило, а поломка.
+	# И РЕЖИМ ТОЛЬКО ОДИН — ПОГОНЯ. Сначала сюда попал и «hunt»: он снаружи и
+	# ищет тебя. Но ищет он долго, иногда минутами, и с ним полотно не
+	# открывалось у игрока, за которым никто не бежит, — а это уже не «во время
+	# погони», это «пока он вообще снаружи».
+	if not monster.visible or monster.mode != "chase":
+		return false
+	# И ОН ДОЛЖЕН БЫТЬ БЛИЗКО. Погоня не кончается, пока он тебя видит или пока
+	# ты не добежал до убежища, — а это бывает и за полкарты отсюда. Запрет на
+	# таком расстоянии превращался в замок: полный проход стенда падал с семи
+	# полотен до трёх, и падал он честно — игрок в тех же условиях просто не мог
+	# открыть холст. Значит правило про то, что он РЯДОМ: спрятаться в полотно
+	# от дышащего в спину нельзя, а рискнуть, оторвавшись, — можно. Дойдёт и
+	# сорвёт: это уже работа _monster_at_canvas.
+	var d: float = Vector2(monster.global_position.x - player_node.global_position.x,
+		monster.global_position.z - player_node.global_position.z).length()
+	return d < cell_size * 8.0
 
 
 func _near(cell: Vector2i) -> bool:
@@ -3545,8 +3752,12 @@ func _on_failed() -> void:
 		if raid != 0:
 			raid_flee = true
 			_raid_stop(false)
-		board.visible = false
-		_pause_player(false)
+		# ЗАКРЫВАЕМ ПО-НАСТОЯЩЕМУ. Здесь стояло «board.visible = false» руками —
+		# и мимо проходило всё остальное, что делает _close_board: лист
+		# оставался висеть в воздухе, мольберт — спрятанным, гул полотна
+		# продолжал звучать, а тварь навсегда оставалась в обходе (см. страховку
+		# в _process).
+		_close_board()
 		if sfx != null:
 			sfx.play_at("roar", monster.global_position, 5.0)
 		_grab_now(Lang.t("g_mash"), "monster")
@@ -3560,7 +3771,7 @@ func _on_failed() -> void:
 		board.final = false
 		if monster != null:
 			monster.finale_mode = false
-		board.visible = false
+		_close_board()
 		_capture("monster")
 		return
 	# ПОЛОТНО УХОДИТ. Два провала подряд — и оно перебирается в другое место.
@@ -3813,44 +4024,15 @@ func _add_table(pos: Vector3, text: String, wand: bool) -> void:
 	# лежит рядом с листом, слабо светится, а по E исчезает со стола и
 	# оказывается в руке. Слабый огонёк заодно выводит к столу из темноты.
 	if wand and text != "":
-		var wi := MeshInstance3D.new()
-		var wcm := CylinderMesh.new()
-		wcm.top_radius = 0.022
-		wcm.bottom_radius = 0.032
-		wcm.height = 0.46
-		wcm.radial_segments = 10
-		wi.mesh = wcm
-		var wmat := _tex_material("wood", 3.0, Color(0.40, 0.34, 0.28))
-		wmat.emission_enabled = true
-		wmat.emission = Color(0.55, 0.62, 0.72)
-		wmat.emission_energy_multiplier = 0.45
-		wi.material_override = wmat
+		# ТА ЖЕ ПАЛОЧКА, ЧТО БУДЕТ В РУКЕ. См. _wand_prop: раньше здесь лежала
+		# своя, потолще и погрубее, и играющий это заметил сразу.
+		var wi := _wand_prop(true)
 		# НА ПЕРЕДНЕЙ КРОМКЕ, СБОКУ ОТ ЛИСТА, поперёк стола. Сначала она легла
 		# вдоль стола за пюпитр, и с места, откуда читают записку, была видна
 		# одна бусина.
 		wi.position = pos + Vector3(-0.50, 1.04, 0.26)
 		wi.rotation_degrees = Vector3(0.0, -22.0, 90.0)
 		add_child(wi)
-		# Бусина на кончике — та же, что у палочки в руке: узнаётся сразу.
-		var bead := MeshInstance3D.new()
-		var bm := SphereMesh.new()
-		bm.radius = 0.034
-		bm.height = 0.068
-		bead.mesh = bm
-		var bmat := StandardMaterial3D.new()
-		bmat.albedo_color = Color(0.78, 0.88, 0.96)
-		bmat.emission_enabled = true
-		bmat.emission = Color(0.62, 0.78, 1.0)
-		bmat.emission_energy_multiplier = 1.6
-		bead.material_override = bmat
-		bead.position = Vector3(0.0, 0.24, 0.0)
-		wi.add_child(bead)
-		var wgl := OmniLight3D.new()
-		wgl.light_energy = 0.7
-		wgl.omni_range = 2.6
-		wgl.light_color = Color(0.62, 0.72, 0.86)
-		wgl.position = Vector3(0.0, 0.24, 0.0)
-		wi.add_child(wgl)
 		tables[tables.size() - 1]["wand_node"] = wi
 	# Книжка слегка светится: столы стоят в стороне от дороги, и без этого игрок
 	# проходит мимо комнаты, ни разу не заглянув внутрь.
@@ -7014,32 +7196,14 @@ func _drop_wand() -> void:
 				good.append(q)
 	var p: Vector3 = good[_rng.randi() % good.size()] if not good.is_empty() \
 		else cell_to_world(world_to_cell(here), 0.0)
-	var mi := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = 0.03
-	cm.bottom_radius = 0.045
-	cm.height = 0.5
-	cm.radial_segments = 8
-	mi.mesh = cm
-	var mat := _tex_material("wood", 3.0, Color(0.40, 0.34, 0.28))
-	# Слабо светится: иначе в полной темноте её не найти вообще, и наказание
-	# превращается в тупик.
-	mat.emission_enabled = true
-	mat.emission = Color(0.55, 0.62, 0.72)
-	mat.emission_energy_multiplier = 0.6
-	mi.material_override = mat
+	# ТА ЖЕ ПАЛОЧКА. Лежащая была самой непохожей из трёх: толстая, восьми-
+	# гранная и вовсе без бусины — то есть игрок искал на полу не то, что у
+	# него выбили. Огонёк оставляем: без него в чёрном коридоре её не найти, и
+	# наказание превращается в тупик.
+	var mi := _wand_prop(true)
 	mi.position = Vector3(p.x, 0.10, p.z)
 	mi.rotation_degrees = Vector3(90, _rng.randf() * 360.0, 0)
 	add_child(mi)
-	# Слабый огонёк на самой палочке: без фонаря коридор — чёрный, и лежащий
-	# на полу цилиндр не видно с двух метров. Радиус маленький, светит только
-	# пятно под собой — это подсказка, а не замена фонарю.
-	var gl := OmniLight3D.new()
-	gl.light_energy = 0.9
-	gl.omni_range = 3.2
-	gl.light_color = Color(0.62, 0.72, 0.86)
-	gl.position = Vector3(0, 0, 0.18)
-	mi.add_child(gl)
 	dropped_wand = mi
 	hud.text = Lang.t("h_dropped")
 
@@ -7274,12 +7438,13 @@ func _on_escaped() -> void:
 		# поймал, и так по кругу». Теперь его нет нигде пять секунд, но он не
 		# отстал: погоня идёт, звук не смолкает, а скрежет бьёт из всех стен
 		# разом — бежать надо, а куда именно от него бежать, непонятно.
-		monster.lurk(LURK)
+		var back: float = _rng.randf_range(LURK_BACK[0], LURK_BACK[1])
+		monster.lurk(back)
 		lurk_t = LURK
 		_lurk_snd = 0.0
 		grab_cool = GRAB_COOL
 		# Окно, чтобы убежать: пока он в камне и ещё SLOW_AFTER снаружи.
-		monster.slow_t = LURK + SLOW_AFTER
+		monster.slow_t = back + SLOW_AFTER
 	if player_node != null:
 		player_node.invuln = 3.2
 		player_node.shake_long(4.0)
@@ -7314,7 +7479,7 @@ func _on_grab_failed() -> void:
 	# хватал снова, едва кончалась неуязвимость: за прогон стенд насчитал
 	# пятнадцать хватов вместо шести и четыре поимки вместо одной.
 	if grab_src == "monster" and monster != null and not dead:
-		monster.lurk(LURK)
+		monster.lurk(_rng.randf_range(LURK_BACK[0], LURK_BACK[1]))
 		lurk_t = LURK
 		_lurk_snd = 0.0
 		grab_cool = GRAB_COOL

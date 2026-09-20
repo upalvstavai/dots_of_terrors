@@ -2427,6 +2427,55 @@ func _wave_report(name: String, w2) -> void:
 		100.0 * rms / 32767.0, float(n) / sr])
 
 
+## КРАЯ И СВЕТ. Три места, на которые играющий указал 20.09: обод колодца
+## наверху («дрожат края»), потолок над столом в начале («светит сверху какой-то
+## свет вроде тумана») и палочка на столе («выглядит не так, как в руке»).
+##
+## Снимаем на ВЫСОКОМ качестве: объёмный туман включается только там, и именно
+## на нём видна муть над столом. Дрожь стыка на одном кадре не поймать — она
+## живёт в разнице между кадрами, — но видно другое, не менее важное: не
+## появилось ли на месте починки щели, засветки или чёрного провала.
+func scene_edges() -> void:
+	say("═══ КРАЯ И СВЕТ ═══")
+	var was: int = Settings.quality
+	Settings.quality = 2
+	w.apply_quality()
+	var p = w.player_node
+	p.invuln = 9999.0
+	p.set_physics_process(false)
+	var кадры := [
+		# Стол в начале: палочка на нём и потолок над ним.
+		[w.cell_to_world(w.start_cell, PlayerScript.STAND_Y) + Vector3(0.0, 0.0, -1.5),
+			PI, -17.0, "01_стол_палочка"],
+		[w.cell_to_world(w.start_cell, PlayerScript.STAND_Y) + Vector3(0.0, 0.0, -0.6),
+			PI, 66.0, "02_потолок_над_столом"],
+	]
+	if w.climb_cell.x >= 0:
+		var at: Vector3 = w.cell_to_world(w.climb_cell, 0.0)
+		кадры.append([Vector3(at.x, PlayerScript.STAND_Y, at.z + 1.2), 0.0, 55.0,
+			"03_колодец_снизу"])
+		кадры.append([Vector3(w.climb_b.x, w.climb_b.y, w.climb_b.z), 0.6, -32.0,
+			"04_обод_сверху"])
+	for spec in кадры:
+		p.global_position = spec[0]
+		p.yaw = float(spec[1])
+		p.rotation.y = p.yaw
+		p.pitch = deg_to_rad(float(spec[2]))
+		# И ГОЛОВУ ПОВОРАЧИВАЕМ САМИ. pitch кладётся на голову внутри _view, а
+		# тот зовётся только при включённой физике — которую мы здесь как раз
+		# выключили, чтобы игрок не съезжал. Первый прогон снял три кадра в пол:
+		# камера осталась смотреть туда, куда смотрела при падении.
+		if p.head != null:
+			p.head.rotation.x = p.pitch
+		for i in 16:
+			await w.get_tree().process_frame
+		await shot(str(spec[3]))
+	Settings.quality = was
+	w.apply_quality()
+	p.set_physics_process(true)
+	say("снято %d кадров" % кадры.size())
+
+
 ## НАБЕГ НА РИСУЮЩЕГО. Два исхода, и проверять надо оба: успел дорисовать —
 ## он должен уйти; не успел — сорвать полотно, схватить, а после освобождения
 ## полотно должно стоять уже в другом месте.
@@ -2524,6 +2573,28 @@ func scene_raid() -> void:
 	say("полотно было в %s, стало в %s" % [str(где0), str(где1)])
 	if где0 == где1:
 		warn("полотно не ушло после сорванного набега")
+	# «СОБАКА». Пока полотно открыто, тварь ходит кругами вокруг рисующего
+	# (park+prowl). Сорванный холст гасили руками, минуя _close_board, — и она
+	# оставалась в обходе навсегда: шла за игроком и не нападала. Проверяем
+	# ровно это состояние, потому что словами его не отличить от погони.
+	say("после срыва: обход %s, припаркован %s, режим %s" % [
+		str(w.monster.prowl), str(w.monster.parked), w.monster.mode])
+	if w.monster.parked or w.monster.prowl:
+		warn("тварь осталась в обходе после сорванного полотна — это и есть «собака»")
+	# И ПОЛОТНО ВО ВРЕМЯ ПОГОНИ НЕ ОТКРЫВАЕТСЯ. Стоим у мольберта, погоня идёт —
+	# холст должен молчать.
+	w.monster.mode = "chase"
+	w.monster.visible = true
+	w.canvas_arm = true
+	w.player_node.global_position = w.cell_to_world(w.canv_cells[w.done],
+		PlayerScript.STAND_Y)
+	for _i in 12:
+		await w.get_tree().process_frame
+	say("у мольберта во время погони полотно открыто: %s" % str(w.board.visible))
+	if w.board.visible:
+		warn("полотно открылось во время погони")
+		w._close_board()
+	w.monster.retreat_to_wall(1.0, 1.0)
 
 
 ## Встать у нынешнего полотна и открыть его. Пешком бот туда идёт минуту и
@@ -3172,6 +3243,8 @@ func run(want: Array) -> void:
 	# скрыт», и лента там читается иначе. Играющий увидел её как поломку
 	# («цвета чёрные, пока не попал по точке») — значит ленту надо уметь
 	# снимать отдельно, а не выяснять это с его слов.
+	if want.has("края"):
+		await scene_edges()
 	if want.has("набег"):
 		await scene_raid()
 	if want.has("рывок"):
@@ -3852,6 +3925,12 @@ func scene_full(ph: int) -> void:
 	w.streak = 0
 	w.mon_kills = 0
 	w.anger = 0
+	# «безблока» — прогон со снятым запретом «под погоней полотно не
+	# открывается». Сравнивать надо два прохода: с правилом и без него, иначе
+	# упавший проход ничего не доказывает.
+	w.no_chase_lock = OS.get_cmdline_user_args().has("безблока")
+	if w.no_chase_lock:
+		say("запрет полотна во время погони СНЯТ (ключ «безблока»)")
 	if w.monster != null:
 		w.monster.drop_hold()
 		w.monster.form_hold = 0.0
@@ -3867,8 +3946,15 @@ func scene_full(ph: int) -> void:
 	Engine.time_scale = 3.0
 	var t0: int = Time.get_ticks_msec()
 	var solved: int = 0
-	for k in w.n_canv:
+	# ПОПЫТОК БОЛЬШЕ, ЧЕМ ПОЛОТЕН. Цикл шёл ровно семь раз — по числу полотен, —
+	# и каждая неудачная попытка съедала полотно, которое ещё не сдано: стоило
+	# холсту не открыться (а теперь он честно не открывается под погоней), как
+	# проход заканчивался на третьем-четвёртом. Полотен по-прежнему семь; просто
+	# к каждому можно вернуться.
+	for k in w.n_canv * 3:
 		if w.won:
+			break
+		if w.done >= w.n_canv:
 			break
 		# Все полотна сданы — дальше только дверь. Без этой строки стенд лез в
 		# canv_cells[7] и падал ровно в тот момент, когда проход УДАЛСЯ.
@@ -3891,6 +3977,23 @@ func scene_full(ph: int) -> void:
 			goal = _canv_now()
 			if attempt > 1:
 				ev["полотно убегало"] = int(ev.get("полотно убегало", 0)) + 1
+			# ПОД ПОГОНЕЙ ПОЛОТНО НЕ ОТКРЫВАЕТСЯ — И ЭТО ПРАВИЛО ИГРЫ, А НЕ
+			# ЗАМИНКА (см. world._chased_now). Бот стоял у мольберта и ждал,
+			# пока оно откроется, тратил три попытки и шёл к следующему: проход
+			# упал с семи полотен до четырёх, и выглядело это поломкой игры.
+			# Игрок в этот момент делает единственное, что можно: бежит в
+			# убежище, там погоня кончается, и он возвращается к холсту.
+			if w._chased_now():
+				var safe: Vector2i = w.active_safe
+				if safe.x < 0 and not w.safe_cells.is_empty():
+					safe = w.safe_cells[0]
+				if safe.x >= 0:
+					ev["бежал в убежище"] = int(ev.get("бежал в убежище", 0)) + 1
+					await goto_cell(safe, 40.0)
+					var st: float = 0.0
+					while w._chased_now() and st < 15.0:
+						await w.get_tree().process_frame
+						st += w.get_process_delta_time()
 			ok = await goto_cell(goal, 60.0)
 			# Доходим ВПЛОТНУЮ: игра открывает полотно в 2.5 м от центра, а
 			# «дошёл» засчитывается и в соседней клетке — оттуда 2.8.
