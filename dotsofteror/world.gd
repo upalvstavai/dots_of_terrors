@@ -393,6 +393,11 @@ var no_canv_said: bool = false    ## уже сказали, что рисова�
 ## запрет меняет ВЕСЬ ход прохода, и без выключателя нельзя отличить «правило
 ## мешает пройти игру» от «бот не умеет по нему играть».
 var no_chase_lock: bool = false
+var hush_t: float = 0.0           ## сколько ещё держится тишина
+var hush_next: float = 55.0       ## сколько до следующей
+var hush_count: int = 0           ## сколько их было за проход — для стенда
+var fake_next: float = 35.0       ## сколько до следующей ложной тревоги
+var fake_count: int = 0
 var was_chasing: bool = false     ## он гнался в прошлом кадре
 var chase_sting_t: float = 0.0    ## откат удара «началась погоня»
 var form_cool: float = 0.0
@@ -449,6 +454,25 @@ const WAND_BEAD_R := 0.026
 const RAID_PART := 0.40
 const RAID_CELLS := 11
 const RAID_SPEED := 0.92
+## ТИШИНА КАК СОБЫТИЕ.
+##
+## Фон в игре шёл ВСЕГДА: эмбиент, музыка, скрежет, сердце, дыхание. К ровному
+## звуку ухо привыкает за минуту, и дальше он не значит ничего — три отзыва
+## подряд «интересно, но не страшно» отчасти про это. Страх живёт не в звуке, а
+## в его пропаже: в хорроре фон ДЫШИТ, и работает он провалами.
+##
+## Раз в полторы-две минуты всё украшение уходит секунд на пятнадцать. Остаются
+## только твои шаги и то, что он шумит сам, — и если в эту тишину он выйдет,
+## слышно будет каждый его шаг.
+const HUSH_EVERY := [85.0, 150.0]
+const HUSH_LEN := [11.0, 19.0]
+## ЛОЖНАЯ ТРЕВОГА. Шаг за спиной, когда он в другом конце карты; скрежет в
+## стене, за которой никого. Каждый звук в игре был честным, и это выучивается
+## за пять минут: слышу — есть, не слышу — нет. Три ложные тревоги делают
+## четвёртую настоящую вдвое страшнее, потому что к ней игрок уже не знает,
+## верить ли ушам. Звуки берём ТЕ ЖЕ, что у настоящего, — иначе подделка
+## отличается на слух и не работает вовсе.
+const FAKE_EVERY := [45.0, 95.0]
 ## РЫВОК В ЛИЦО. Сколько таких за проход и с какой долей показов он случается.
 ## Трёх достаточно: четвёртый читается как приём игры, а не как случай.
 const JUMP_MAX := 3
@@ -3177,6 +3201,8 @@ func _process(delta: float) -> void:
 	_watch_outings(delta)
 	_update_calm(delta)
 	_update_raid(delta)
+	_update_hush(delta)
+	_update_fake(delta)
 	_update_form(delta)
 	_update_human_attack(delta)
 	_update_still(delta)
@@ -5471,6 +5497,12 @@ func _update_sound(delta: float) -> void:
 		mus_k *= 0.5
 	if dead or won or not started:
 		mus_k = 0.0
+	# В ТИШИНУ УХОДИТ ВСЁ УКРАШЕНИЕ, но не он сам. Музыка, бит, сердце и
+	# дыхание — это то, чем игру подогревают снаружи; скрежет и шаги издаёт
+	# он, и отнимать их значит отнимать единственный сенсор. Поэтому в тишине
+	# слышно ровно одно: есть он рядом или нет.
+	if hush_t > 0.0:
+		mus_k = 0.0
 	sfx.music_near(mus_k, delta)
 	# НАЧАЛО ПОГОНИ — ОТДЕЛЬНЫЙ ЗВУК. До сих пор момент, когда он срывается за
 	# тобой, ничем не отличался от того, как он просто ходил рядом: тот же
@@ -5487,7 +5519,7 @@ func _update_sound(delta: float) -> void:
 	was_chasing = chasing
 	# И БИТ НА ВСЮ ПОГОНЮ. Удар в начале говорит «началось», бит говорит «идёт»
 	# — это разные сообщения, и второго до сих пор не было вовсе.
-	sfx.beat_level(chasing and not dead and not won, mus_k, delta)
+	sfx.beat_level(chasing and not dead and not won and hush_t <= 0.0, mus_k, delta)
 	_skit_t -= delta
 	if _skit_t <= 0.0:
 		# И СЛЫШНО ЕГО ДАЛЬШЕ, ПОКА ОН СНАРУЖИ. Порог был десять клеток при
@@ -5513,7 +5545,7 @@ func _update_sound(delta: float) -> void:
 			_skit_t *= 1.9
 
 	_heart_t -= delta
-	if _heart_t <= 0.0 and d < cell_size * 5.0:
+	if _heart_t <= 0.0 and d < cell_size * 5.0 and hush_t <= 0.0:
 		var k: float = clampf(1.0 - d / (cell_size * 5.0), 0.0, 1.0)
 		sfx.play("heart", linear_to_db(clampf(k * 0.55, 0.04, 1.0)), 0.06)
 		# Не короче самой записи: «лаб-даб» длится 0.62 с, и при интервале 0.3 с
@@ -5523,7 +5555,7 @@ func _update_sound(delta: float) -> void:
 	_breath_t -= delta
 	if _breath_t <= 0.0:
 		var scare: float = clampf(1.0 - d / (cell_size * 8.0), 0.0, 1.0) * 0.7 + _madness_stage() * 0.15
-		if scare > 0.15:
+		if scare > 0.15 and hush_t <= 0.0:
 			sfx.play("breath", linear_to_db(clampf(scare * 0.5, 0.05, 1.0)), 0.10)
 		_breath_t = clampf(3.4 - scare * 2.4, 0.9, 4.0)
 
@@ -6066,6 +6098,87 @@ func _update_calm(delta: float) -> void:
 		print("[журнал] %.0f с, полотен %d: затишье %s" % [_clock, done,
 			"началось" if hold else "кончилось (ждал %.0f с)" % calm_since])
 	monster.hold_out = hold
+
+
+## ТИШИНА. Накатывает сама, уходит сама; ни на что в игре не влияет, кроме
+## того, что слышно. Нарочно НЕ отменяется, когда он выходит: выход в тишину —
+## это и есть лучшее, что она может дать.
+func _update_hush(delta: float) -> void:
+	if sfx == null or not started or dead or won or lab:
+		hush_t = 0.0
+		return
+	if hush_t > 0.0:
+		hush_t -= delta
+		# Эмбиент держим прижатым всё это время: amb_duck берёт максимум из
+		# своего и нового, поэтому доливаем понемногу каждый кадр.
+		sfx.amb_duck(0.35)
+		return
+	hush_next -= delta
+	if hush_next > 0.0:
+		return
+	# Не поверх чужой звуковой сцены: в хвате, в показе и в финале звук —
+	# часть происходящего, и гасить его значит ломать сцену.
+	if _attack_busy() or cine != 0 or ending != 0 or (board != null and board.final):
+		hush_next = 10.0
+		return
+	# И НЕ ПОСРЕДИ ПОГОНИ. Тишина должна падать в спокойный момент, а он —
+	# выходить в неё. Наоборот не работает: оборванные на бегу музыка и бит
+	# читаются не тишиной, а сбоем звука.
+	if _chased_now():
+		hush_next = 8.0
+		return
+	hush_next = _rng.randf_range(HUSH_EVERY[0], HUSH_EVERY[1])
+	hush_t = _rng.randf_range(HUSH_LEN[0], HUSH_LEN[1])
+	hush_count += 1
+	print("[журнал] %.0f с: тишина на %.0f с" % [_clock, hush_t])
+
+
+## ЛОЖНАЯ ТРЕВОГА. Условие одно и жёсткое: его тут точно нет. Иначе подделка
+## однажды совпадёт с настоящим выходом, и игрок научится не верить уже
+## НАСТОЯЩЕМУ звуку — это ровно обратное тому, ради чего всё делается.
+func _update_fake(delta: float) -> void:
+	if sfx == null or monster == null or player_node == null:
+		return
+	if not started or dead or won or lab:
+		return
+	fake_next -= delta
+	if fake_next > 0.0:
+		return
+	var d: float = Vector2(monster.global_position.x - player_node.global_position.x,
+		monster.global_position.z - player_node.global_position.z).length()
+	if monster.mode != "inwall" or lurk_t > 0.0 or _attack_busy() or cine != 0 			or d < cell_size * 7.0:
+		fake_next = 12.0
+		return
+	fake_next = _rng.randf_range(FAKE_EVERY[0], FAKE_EVERY[1])
+	fake_count += 1
+	var fwd: Vector3 = -player_node.global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length() > 0.01 else Vector3.FORWARD
+	var here: Vector3 = player_node.global_position
+	match _rng.randi() % 3:
+		0:
+			# ШАГ ЗА СПИНОЙ. Самая простая и самая действенная: ты стоишь, а
+			# позади кто-то переступил. Ставим в двух метрах позади и только
+			# если там пол, а не камень.
+			var at: Vector3 = here - fwd * 2.2
+			var c := world_to_cell(at)
+			if maze.is_wall(c.x, c.y):
+				at = here - fwd * 1.1
+			sfx.stomp(at, -3.0)
+		1:
+			# СКРЕЖЕТ В СОСЕДНЕЙ СТЕНЕ. Тот же звук, что у него в камне, из
+			# клетки рядом — то есть «он прямо за этой стеной».
+			var pc := world_to_cell(here)
+			for _i in 6:
+				var dd := Vector2i(_rng.randi_range(-1, 1), _rng.randi_range(-1, 1))
+				if dd == Vector2i.ZERO or not maze.is_wall(pc.x + dd.x, pc.y + dd.y):
+					continue
+				sfx.play_at("skitter", cell_to_world(pc + dd, here.y), -6.0, 0.8)
+				break
+		_:
+			# ДАЛЁКИЙ РЁВ. Не пугает сам по себе — он сообщает «началось» и
+			# отправляет игрока слушать. А не начиналось ничего.
+			sfx.play_at("roar", here + fwd * cell_size * 6.0, -14.0, 0.75)
 
 
 ## ПРЕВРАЩЕНИЕ. Условия те же, что у засады: редко, на виду и не поверх другой
