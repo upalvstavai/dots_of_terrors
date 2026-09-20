@@ -60,6 +60,17 @@ var hole_armed: bool = false
 var hum_on: bool = false
 var stage: int = 0   ## 0 входишь, 1 ходишь, 2 читаешь, 3 пролом открыт, 4 падаешь
 var board                   ## блокнот с детскими рисунками
+## БЛОКНОТ — ВЕЩЬ НА ОДЕЯЛЕ, А НЕ ОКНО ПОВЕРХ ЭКРАНА. Играющий (20.09):
+## «сделай так, чтобы было видно, что мы реально рисуем в блокноте». Полотно
+## рисуется в своём кадре, а кадр натянут на страницу: игрок смотрит вниз, на
+## раскрытую тетрадь, и ведёт линию по ней. Ровно так же устроено полотно в
+## лабиринте — там лист висит на мольберте.
+var book_vp: SubViewport
+var book_face: MeshInstance3D
+var book_uv: Vector2 = Vector2(0.5, 0.5)
+## Откуда игрок подошёл к тетради: на время рисования он наклоняется над ней,
+## а закрыв её, должен оказаться там же, где стоял, а не внутри кровати.
+var _book_from: Vector3 = Vector3.ZERO
 var vines: Array = []       ## лианы, тянущиеся к пролому
 var enter_t: float = 1.1    ## сколько длится вход
 var street_door_z: float = 9.5   ## где стоит уличная дверь
@@ -112,6 +123,9 @@ func _ready() -> void:
 	# с начала тротуара. Ключ «-- улица» снимает три кадра оттуда.
 	if OS.get_cmdline_user_args().has("улица"):
 		_street_probe.call_deferred()
+	# СМОТРОВАЯ ДЛЯ БЛОКНОТА: открыть тетрадь и снять, как это выглядит.
+	if OS.get_cmdline_user_args().has("блокнот"):
+		_book_probe.call_deferred()
 	_build_stuff()
 	player = PlayerScene.instantiate()
 	add_child(player)
@@ -2096,7 +2110,17 @@ func _build_ui() -> void:
 	board.solved.connect(_on_book_done)
 	board.failed.connect(_on_book_done)
 	board.abandoned.connect(_on_book_done)
-	layer.add_child(board)
+	# Свой кадр под страницу. Размер как у лабиринтного полотна: один код
+	# рисует, и мерки у него одни.
+	book_vp = SubViewport.new()
+	book_vp.size = Vector2i(1000, 800)
+	book_vp.transparent_bg = false
+	book_vp.canvas_item_default_texture_filter = \
+		Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_LINEAR
+	book_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	book_vp.disable_3d = true
+	add_child(book_vp)
+	book_vp.add_child(board)
 	dark = ColorRect.new()
 	dark.color = Color(0, 0, 0, 0)
 	dark.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2104,7 +2128,110 @@ func _build_ui() -> void:
 	layer.add_child(dark)
 
 
+## СТРАНИЦА В МИРЕ. Кадр полотна натянут на лист чуть больше самой тетради:
+## ровно по обложке он занимал бы четверть экрана, и рисовать пришлось бы в
+## марку. Лежит плашмя, повторяя наклон блокнота на одеяле.
+func _book_sheet() -> void:
+	if book_face != null:
+		return
+	book_face = MeshInstance3D.new()
+	var q := QuadMesh.new()
+	# КРУПНЕЕ САМОЙ ТЕТРАДИ. Ровно по обложке (27 см) страница занимала в кадре
+	# марку, и рисовать по ней было нельзя. Полотно — то, на что смотрят, пока
+	# рисуют; оно должно занимать кадр.
+	q.size = Vector2(0.42, 0.336)
+	book_face.mesh = q
+	add_child(book_face)
+	var m := StandardMaterial3D.new()
+	var tex: Texture2D = book_vp.get_texture()
+	m.albedo_texture = tex
+	# Кадр хранится в sRGB, а мир берёт альбедо линейным: без этой строки
+	# чёрная бумага выходит светло-серой. Та же ловушка, что и в лабиринте.
+	m.albedo_texture_force_srgb = true
+	m.emission_enabled = true
+	m.emission_texture = tex
+	# Светится сам: в детской одна лампа, и она за спиной.
+	m.emission_energy_multiplier = 0.85
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	book_face.material_override = m
+	book_face.visible = false
+
+
+## Положить лист на блокнот и завести игрока над ним.
+func _book_open_3d() -> void:
+	_book_sheet()
+	# Игрок наклоняется над тетрадью: встаём с той стороны, откуда подошли.
+	_book_from = player.global_position
+	var к_игроку: Vector3 = player.global_position - book.global_position
+	к_игроку.y = 0.0
+	if к_игроку.length() < 0.05:
+		к_игроку = Vector3(0.0, 0.0, 1.0)
+	к_игроку = к_игроку.normalized()
+	# НАКЛОНЯЕТСЯ, А НЕ СМОТРИТ С ВЫСОТЫ РОСТА. С глаза на 1.70 тетрадь на
+	# кровати занимала десятую часть кадра — рисовать по ней нельзя. Опускаем
+	# игрока к ней: глаз в сорока сантиметрах над страницей, как у человека,
+	# который сел рядом и склонился над тетрадью.
+	var глаз_над: float = 0.42
+	player.global_position = book.global_position + к_игроку * 0.30 \
+		+ Vector3(0.0, 0.10 + глаз_над - PlayerScript.EYE_Y + PlayerScript.STAND_Y, 0.0)
+	book_face.global_position = book.global_position + Vector3(0.0, 0.10, 0.0)
+	# НЕ ПЛАШМЯ, А ПОДНЯТ НАВСТРЕЧУ. Лист, лежащий ровно на одеяле, виден с
+	# высоты роста почти с ребра. Поднимаем его к читающему — так держат
+	# тетрадь, когда в ней рисуют, — но не до вертикали: она всё ещё лежит.
+	var цель: Vector3 = book_face.global_position + Vector3(0.0, 0.62, 0.0) \
+		+ к_игроку * 0.50
+	# look_at направляет −Z, а лицо у листа по +Z: смотрим в противоположную.
+	book_face.look_at(book_face.global_position * 2.0 - цель, Vector3.UP)
+	book_face.visible = true
+
+
+## Курсор по странице. Тот же перевод, что в лабиринте: луч из камеры через
+## курсор, пересечение с плоскостью листа, доли листа — в пиксели кадра.
+func _update_book3d(delta: float) -> void:
+	if board == null or not board.visible or book_face == null:
+		return
+	# Голову ведём сами: физика у рисующего выключена, и обычный поворот в ней
+	# молчит — та же ловушка, что в лабиринте.
+	player.aim_head(book_face.global_position, 7.0, delta)
+	var cam: Camera3D = player.camera
+	if cam == null:
+		return
+	var mp: Vector2 = get_viewport().get_mouse_position()
+	var from: Vector3 = cam.project_ray_origin(mp)
+	var dir: Vector3 = cam.project_ray_normal(mp)
+	var n: Vector3 = book_face.global_transform.basis.z.normalized()
+	var denom: float = n.dot(dir)
+	if absf(denom) < 0.0001:
+		return
+	var t: float = n.dot(book_face.global_position - from) / denom
+	if t <= 0.0:
+		return
+	var hit: Vector3 = from + dir * t
+	var loc: Vector3 = book_face.global_transform.affine_inverse() * hit
+	var q: QuadMesh = book_face.mesh
+	var u: float = loc.x / q.size.x + 0.5
+	var v: float = 0.5 - loc.y / q.size.y
+	book_uv = Vector2(u, v)
+	var px := Vector2(u * float(book_vp.size.x), v * float(book_vp.size.y))
+	var mm := InputEventMouseMotion.new()
+	mm.position = px
+	mm.global_position = px
+	book_vp.push_input(mm, true)
+
+
 func _unhandled_input(event: InputEvent) -> void:
+	# ЩЕЛЧОК ПО СТРАНИЦЕ. Событие переводится в координаты натянутого кадра:
+	# иначе точки нажимались бы по экрану, а тетрадь лежит под наклоном.
+	if board != null and board.visible and book_face != null \
+			and event is InputEventMouseButton:
+		var mb := (event as InputEventMouseButton).duplicate() as InputEventMouseButton
+		var px := Vector2(book_uv.x * float(book_vp.size.x),
+			book_uv.y * float(book_vp.size.y))
+		mb.position = px
+		mb.global_position = px
+		book_vp.push_input(mb, true)
+		return
 	# Полный экран работает и здесь: пролог — первое, что видит игрок, и жать
 	# F11 он будет именно тут.
 	if event.is_action_pressed("fullscreen"):
@@ -2143,6 +2270,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		sfx.play("scrape", -8.0)
 		board.open(sh, 0, 0.0, 0, rng.randi())
 		board.visible = true
+		_book_open_3d()
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		player.set_physics_process(false)
 		hud.text = Lang.t("p_draw")
@@ -2152,6 +2280,14 @@ func _unhandled_input(event: InputEvent) -> void:
 ## испытание, а первое знакомство с тем, чем ты будешь занят всю игру.
 func _on_book_done() -> void:
 	board.visible = false
+	if book_face != null:
+		book_face.visible = false
+	# Встаём обратно и распрямляемся.
+	if _book_from != Vector3.ZERO:
+		player.global_position = _book_from
+		_book_from = Vector3.ZERO
+	player.pitch = 0.0
+	player.head.rotation.x = 0.0
 	hud.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	hud.offset_top = -70.0
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -2337,6 +2473,7 @@ func _hole_dist() -> float:
 
 
 func _process(delta: float) -> void:
+	_update_book3d(delta)
 	_t += delta
 	# ВХОД. Управление отдаём на первом же кадре, см. ниже.
 	if stage == 0:
@@ -2443,6 +2580,53 @@ func _process(delta: float) -> void:
 
 
 ## Снять пролом: открыть, встать перед ним и отдать три кадра подряд.
+func _book_probe() -> void:
+	await get_tree().process_frame
+	stage = 1
+	lamp.light_energy = 3.2
+	player.global_position = book.global_position + Vector3(0.0, PlayerScript.STAND_Y, 0.6)
+	await get_tree().process_frame
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 5150
+	var sh: Dictionary = Shapes.TUTOR[0]
+	board.tutor = true
+	board.open(sh, 0, 0.0, 0, rng.randi())
+	board.visible = true
+	_book_open_3d()
+	player.set_physics_process(false)
+	for i in 3:
+		for _k in 20:
+			await get_tree().process_frame
+		await RenderingServer.frame_post_draw
+		get_viewport().get_texture().get_image().save_png("user://блокнот_%d.png" % i)
+	# ЩЕЛЧОК ПО ПЕРВОЙ ТОЧКЕ. Проверяем, что по странице вообще можно рисовать:
+	# полотно живёт в своём кадре, и щелчки в него надо пересылать руками.
+	var было: int = board.next_idx
+	for d in board.dots:
+		if int(d["idx"]) != board.next_idx:
+			continue
+		# Доли — от ХОЛСТА, а не от всего кадра: у полотна свои поля.
+		var rc: Rect2 = board.board_rect()
+		var px := rc.position + Vector2(float(d["nx"]) * rc.size.x,
+			float(d["ny"]) * rc.size.y)
+		var mm := InputEventMouseMotion.new()
+		mm.position = px
+		mm.global_position = px
+		book_vp.push_input(mm, true)
+		var mb := InputEventMouseButton.new()
+		mb.button_index = MOUSE_BUTTON_LEFT
+		mb.pressed = true
+		mb.position = px
+		mb.global_position = px
+		book_vp.push_input(mb, true)
+		break
+	await get_tree().process_frame
+	await get_tree().process_frame
+	print("[блокнот] щелчок по первой точке: было %d, стало %d" % [было, board.next_idx])
+	print("[блокнот] снято 3 кадра")
+	get_tree().quit()
+
+
 func _street_probe() -> void:
 	await get_tree().process_frame
 	player.set_physics_process(false)
