@@ -31,6 +31,11 @@ var t: float = 0.0
 var live: bool = false
 var _rng := RandomNumberGenerator.new()
 var _drips: Array = []
+## ДЕРЖИМ КАРТИНКИ В ПАМЯТИ. Загруженные в момент показа, они успевали отдать
+## только размер: лист выходил ровной светлой заливкой — ровно то, что увидел
+## играющий («картинки не показываются, просто белый фон»). В отдельной сцене
+## стенда этого не было, потому что там их успевали подтянуть раньше.
+var _листы: Array = []
 ## ЛИСТ — ОТДЕЛЬНЫЙ УЗЕЛ, И ОН ОБРЕЗАЕТ. Свечение и подтёки рисовались поверх
 ## всего экрана: кольца света вылезали за раму, и картинка читалась не листом,
 ## а заставкой. Дочерний Control с clip_contents режет всё по краю бумаги.
@@ -60,6 +65,9 @@ func _ready() -> void:
 	_sheet_node.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_sheet_node.draw.connect(_draw_sheet)
 	add_child(_sheet_node)
+	_листы.clear()
+	for i in 7:
+		_листы.append(_load_tex(i))
 	set_process(false)
 
 
@@ -261,7 +269,17 @@ const ЛИСТЫ := [
 ]
 
 
+## Берём из памяти; если почему-то нет — грузим и запоминаем.
 func _tex_for(n: int) -> Texture2D:
+	if n >= 0 and n < _листы.size() and _листы[n] != null:
+		return _листы[n]
+	var t2: Texture2D = _load_tex(n)
+	if n >= 0 and n < _листы.size():
+		_листы[n] = t2
+	return t2
+
+
+func _load_tex(n: int) -> Texture2D:
 	if n >= 0 and n < ЛИСТЫ.size():
 		var p: String = "res://tex/story_images_v2/%s.png" % ЛИСТЫ[n]
 		if ResourceLoader.exists(p):

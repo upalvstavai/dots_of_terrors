@@ -3021,12 +3021,12 @@ func run(want: Array) -> void:
 		# СНИМАЕМ СРАЗУ. Мир каждый кадр возвращает игроку физику, и тело
 		# выталкивает от мольберта: если ждать секунду, камера уезжает.
 		for _q in 3:
-			p7.global_position = холст.global_position + перед * 1.6
+			p7.global_position = холст.global_position + перед * 4.6
 			p7.global_position.y = холст.global_position.y \
 				+ (PlayerScript.STAND_Y - PlayerScript.EYE_Y)
 			p7.aim_head(холст.global_position, 40.0, 0.2)
 			await w.get_tree().process_frame
-		p7.global_position = холст.global_position + перед * 1.6
+		p7.global_position = холст.global_position + перед * 4.6
 		p7.global_position.y = холст.global_position.y \
 			+ (PlayerScript.STAND_Y - PlayerScript.EYE_Y)
 		p7.aim_head(холст.global_position, 40.0, 0.2)
@@ -3375,6 +3375,11 @@ func _watch() -> void:
 		# он будет стоять столбом по семь секунд на каждом полотне.
 		if w.vision_ui != null and w.vision_ui.visible:
 			ev["картинка"] = int(ev.get("картинка", 0)) + 1
+			# Первую снимаем: так видно, что показывается на самом деле.
+			if not was.get("снял_картинку", false):
+				was["снял_картинку"] = true
+				await w.get_tree().create_timer(3.0).timeout
+				await shot("проход_картинка")
 			w.vision_ui._close()
 			continue
 		# КАДР МОЛЬБЕРТА ПО ДОРОГЕ. Самый честный способ увидеть полотно так,

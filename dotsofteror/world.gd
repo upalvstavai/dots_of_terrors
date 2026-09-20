@@ -3094,7 +3094,11 @@ func _put_dots(i: int, dots: Array) -> void:
 		# пикселем; на полотне точка — это капля краски.
 		var sm := SphereMesh.new()
 		# Точка фигуры крупнее мусорной — ровно как на самом полотне.
-		var r: float = 0.020 if фигура else 0.013
+		# КРУПНЕЕ, ЧЕМ НА САМОМ ПОЛОТНЕ. Двухсантиметровая точка с четырёх метров
+		# — это один пиксель: играющий (20.09) сказал, что полотно в коридоре
+		# по-прежнему «прямоугольник». Здесь важно не повторить полотно точь-в-
+		# точь, а чтобы издалека было видно, ЧТО на нём точки.
+		var r: float = 0.034 if фигура else 0.022
 		sm.radius = r * 0.5
 		sm.height = r
 		sm.radial_segments = 10
@@ -3104,7 +3108,7 @@ func _put_dots(i: int, dots: Array) -> void:
 		mat.albedo_color = col
 		mat.emission_enabled = true
 		mat.emission = col
-		mat.emission_energy_multiplier = 1.4 if фигура else 0.8
+		mat.emission_energy_multiplier = 3.2 if фигура else 1.6
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		# КРУГЛАЯ, А НЕ КВАДРАТНАЯ: квадратики на холсте читаются пикселями.
 		# ЛИЦЕВАЯ СТОРОНА ХОЛСТА — ПО −Z. Первый заход выложил точки на изнанку,
@@ -3137,13 +3141,13 @@ func _draw_on_easel(i: int) -> void:
 			continue
 		var m := MeshInstance3D.new()
 		var bm := BoxMesh.new()
-		bm.size = Vector3(дл, 0.008, 0.004)
+		bm.size = Vector3(дл, 0.013, 0.004)
 		m.mesh = bm
 		var mat := StandardMaterial3D.new()
 		mat.albedo_color = Color(0.22, 1.0, 0.62)
 		mat.emission_enabled = true
 		mat.emission = Color(0.22, 1.0, 0.62)
-		mat.emission_energy_multiplier = 1.2
+		mat.emission_energy_multiplier = 2.6
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		m.material_override = mat

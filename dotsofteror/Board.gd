@@ -47,6 +47,13 @@ var pop_t: float = 0.0             ## вспышка только что сое�
 ## тело краски, а по центру светящееся ядро; толщина гуляет по длине, потому
 ## что рука не линейка. Всё это рисуется на холсте В МИРЕ, и разница видна.
 const PAINT := Color(0.22, 1.0, 0.62)
+## КАРАНДАШ В ТЕТРАДИ. Неоновая краска по белой бумаге — это лабиринт, а в
+## детской ребёнок водит грифелем. Цвет линии берётся отсюда, а не из PAINT.
+const PENCIL := Color(0.16, 0.17, 0.22)
+
+
+func _ink() -> Color:
+	return PENCIL if tutor else PAINT
 var drips: Array = []              ## потёки: {pos, len, t, life, col, w}
 var burn: float = 0.0              ## вспышка по всей линии, когда полотно сдано
 ## СДАНО, НО ЕЩЁ НА ЭКРАНЕ. Раньше последняя точка гасила узел в тот же кадр.
@@ -329,7 +336,7 @@ func _click(mouse_pos: Vector2) -> void:
 		pen_t = 0.7
 		grow = 0.0
 		pop_t = 0.22
-		_drip_at(_dot_pos(hit), PAINT, 1, 0.75)
+		_drip_at(_dot_pos(hit), _ink(), 1, 0.75)
 		linked.emit(next_idx, n)
 		if next_idx >= n:
 			# ПРОЖЁГ. Раньше последняя точка просто гасила полотно в тот же
@@ -369,6 +376,41 @@ func board_rect() -> Rect2:
 func _draw_canvas(b: Rect2) -> void:
 	var pad := 14.0
 	var f := Rect2(b.position - Vector2(pad, pad), b.size + Vector2(pad * 2.0, pad * 2.0))
+	# В ДЕТСКОЙ ЭТО ТЕТРАДЬ, А НЕ ХОЛСТ НА МОЛЬБЕРТЕ. Играющий (20.09): «в
+	# детской раскрывается не как блокнот, а как полотно из лабиринта, из-за
+	# чего ломается внешность». Там лежит детский блокнот: светлая бумага,
+	# картонная обложка вместо дубовой рамы и линейки в клетку. Чёрный холст с
+	# неоновой краской начинается позже, под полом.
+	if tutor:
+		if wood != null:
+			draw_texture_rect(wood, f, true, Color(0.42, 0.33, 0.26))
+		else:
+			draw_rect(f, Color(0.40, 0.32, 0.25))
+		if paper != null:
+			draw_texture_rect(paper, b, false, Color(0.86, 0.83, 0.75))
+		else:
+			draw_rect(b, Color(0.86, 0.83, 0.75))
+		# Клетка: бледные линии через равные промежутки — то, по чему и
+		# узнаётся школьная тетрадь.
+		var шаг: float = b.size.y / 14.0
+		var лин := Color(0.55, 0.62, 0.72, 0.35)
+		var yy: float = b.position.y + шаг
+		while yy < b.position.y + b.size.y - 1.0:
+			draw_line(Vector2(b.position.x + 4.0, yy),
+				Vector2(b.position.x + b.size.x - 4.0, yy), лин, 1.0)
+			yy += шаг
+		var xx: float = b.position.x + шаг
+		while xx < b.position.x + b.size.x - 1.0:
+			draw_line(Vector2(xx, b.position.y + 4.0),
+				Vector2(xx, b.position.y + b.size.y - 4.0), лин, 1.0)
+			xx += шаг
+		# Поля красным, как в тетради, и тень от корешка слева.
+		draw_line(Vector2(b.position.x + шаг * 1.5, b.position.y + 4.0),
+			Vector2(b.position.x + шаг * 1.5, b.position.y + b.size.y - 4.0),
+			Color(0.72, 0.36, 0.34, 0.45), 1.6)
+		draw_rect(Rect2(b.position, Vector2(шаг * 0.5, b.size.y)),
+			Color(0.35, 0.30, 0.24, 0.22))
+		return
 	if wood != null:
 		draw_texture_rect(wood, f, true, Color(0.30, 0.24, 0.20))
 	else:
@@ -452,9 +494,10 @@ func _draw_paint(pts: PackedVector2Array, fade: float) -> void:
 		draw_line(a, b2, Color(0.02, 0.10, 0.06, 0.75 * fade),
 			(5.4 + bk * 4.0) * w, true)
 		# Тело краски.
-		draw_line(a, b2, Color(PAINT.r * 0.55, PAINT.g * 0.55, PAINT.b * 0.55,
+		var ink := _ink()
+		draw_line(a, b2, Color(ink.r * 0.55, ink.g * 0.55, ink.b * 0.55,
 			0.55 * fade), (3.6 + bk * 3.0) * w, true)
-		draw_line(a, b2, Color(PAINT.r, PAINT.g, PAINT.b, 0.9 * fade),
+		draw_line(a, b2, Color(ink.r, ink.g, ink.b, 0.9 * fade),
 			(2.2 + bk * 2.4) * w, true)
 		# Ядро: почти белое, тонкое. Это оно и даёт «светится», а не заливка.
 		draw_line(a, b2, Color(lerpf(0.62, 1.0, bk), 1.0, lerpf(0.86, 1.0, bk),
@@ -466,7 +509,7 @@ func _draw_paint(pts: PackedVector2Array, fade: float) -> void:
 			draw_circle(b2, (2.7 + bk * 2.0) * w,
 				Color(0.02, 0.10, 0.06, 0.75 * fade))
 			draw_circle(b2, (1.1 + bk * 1.2) * w,
-				Color(PAINT.r, PAINT.g, PAINT.b, 0.9 * fade))
+				Color(ink.r, ink.g, ink.b, 0.9 * fade))
 
 
 ## Капля краски вниз от точки. count — сколько, fat — насколько жирные.
@@ -492,9 +535,14 @@ func _drip_at(p: Vector2, col: Color, count: int, fat: float) -> void:
 func _draw() -> void:
 	# Кадр целиком заливаем чернотой: он натянут на холст, и всё, что светлее
 	# рисунка, читается каймой вокруг полотна.
-	draw_rect(Rect2(Vector2.ZERO, size), Color(0.02, 0.02, 0.025))
+	# ВОКРУГ ЛИСТА — ОБЛОЖКА, А НЕ ЧЕРНОТА. В лабиринте кадр натянут на холст и
+	# чёрные поля читаются тенью; в детской тот же чёрный кант превращал
+	# тетрадь в планшет. Там вокруг страницы картон.
+	var фон: Color = Color(0.34, 0.26, 0.20) if tutor else Color(0.02, 0.02, 0.025)
+	draw_rect(Rect2(Vector2.ZERO, size), фон)
 	var b := board_rect()
-	draw_rect(Rect2(Vector2.ZERO, size), Color(0.012, 0.012, 0.024, 0.9))
+	if not tutor:
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0.012, 0.012, 0.024, 0.9))
 	_draw_canvas(b)
 
 	# Дрожь: чем меньше времени и чем хуже лабиринт, тем сильнее
@@ -534,7 +582,7 @@ func _draw() -> void:
 		if grow < 1.0:
 			var tip: Vector2 = pts[pts.size() - 1]
 			var kk: float = 1.0 - grow
-			draw_circle(tip, 7.0 + kk * 3.0, Color(PAINT.r, PAINT.g, PAINT.b, 0.16 * kk * fade))
+			draw_circle(tip, 7.0 + kk * 3.0, Color(_ink().r, _ink().g, _ink().b, 0.16 * kk * fade))
 			draw_circle(tip, 3.4, Color(0.72, 1.0, 0.88, (0.35 + 0.6 * kk) * fade))
 
 	# ПОТЁКИ. Свежая краска не держится на вертикальном холсте: от каждой взятой
@@ -566,7 +614,7 @@ func _draw() -> void:
 	for d in order:
 		var p := _dot_pos(d) + Vector2(_jit(amp * 0.4), _jit(amp * 0.4))
 		var done: bool = d["done"]
-		var col: Color = PAINT if done else Shapes.PALETTE[d["col"]]
+		var col: Color = _ink() if done else Shapes.PALETTE[d["col"]]
 		var a: float = _dot_alpha(d) * fade
 		# ТОЧКА — ЭТО СЛЕД НАЖИМА. Сначала тёмная лунка (краска вдавлена в
 		# холст), потом свечение вокруг, потом само пятно, и по центру блик.
