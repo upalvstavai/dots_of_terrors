@@ -2933,6 +2933,71 @@ func run(want: Array) -> void:
 		await scene_blade()
 	if all or want.has("поимка"):
 		await scene_catch(want.has("гуманоид"))
+	if want.has("пересидеть"):
+		say("═══ СКОЛЬКО МОЖНО СТОЯТЬ В УБЕЖИЩЕ ═══")
+		stage_clean()
+		var p6 = w.player_node
+		var m6 = w.monster
+		p6.invuln = 0.0
+		m6.visible = false
+		m6.mode = "inwall"
+		m6.resurface_t = 9999.0
+		# GRACE: до 45-й секунды не бьёт ничего, ждать её честно — это и есть
+		# условия игры.
+		while w._clock < w.GRACE + 1.0:
+			await w.get_tree().create_timer(0.5).timeout
+		# 1. СТАРТОВАЯ КОМНАТА. Там записка и палочка, новичок стоит и читает.
+		p6.global_position = w.cell_to_world(w.start_cell, PlayerScript.STAND_Y)
+		var ударов: int = 0
+		var t6: float = 0.0
+		while t6 < 40.0:
+			await w.get_tree().create_timer(0.5).timeout
+			t6 += 0.5
+			if w.grab_ui.visible:
+				ударов += 1
+				w.grab_ui._end(true)
+		say("  на старте у стола, 40 с: ударов %d (ждём 0)" % [ударов])
+		if ударов > 0:
+			warn("стартовая комната бьёт, пока игрок ещё читает записку")
+		# 2. ДРУГОЕ УБЕЖИЩЕ, погони нет: одно треснувшее за визит.
+		var уб: Vector2i = w.safe_cells[1] if w.safe_cells.size() > 1 else w.safe_cells[0]
+		p6.global_position = w.cell_to_world(уб, PlayerScript.STAND_Y)
+		p6.invuln = 0.0
+		ударов = 0
+		var когда: Array = []
+		t6 = 0.0
+		while t6 < 75.0:
+			await w.get_tree().create_timer(0.5).timeout
+			t6 += 0.5
+			if w.grab_ui.visible:
+				ударов += 1
+				когда.append(t6)
+				w.grab_ui._end(true)
+		say("  в убежище 75 с без погони: ударов %d, на секундах %s (ждём 1)" % [ударов, str(когда)])
+		if ударов != 1:
+			warn("за визит в убежище должно треснуть ровно один раз")
+		# 3. ТА ЖЕ КОМНАТА, НО ИДЁТ ПОГОНЯ: убежище обязано защищать целиком.
+		p6.global_position = w.cell_to_world(уб, PlayerScript.STAND_Y)
+		p6.invuln = 0.0
+		w.safe_used = false
+		w.safe_sit = 0.0
+		m6.visible = true
+		m6.mode = "chase"
+		m6.global_position = w.cell_to_world(w._far_cell_from(уб))
+		m6.parked = true
+		ударов = 0
+		t6 = 0.0
+		while t6 < 45.0:
+			await w.get_tree().create_timer(0.5).timeout
+			t6 += 0.5
+			m6.mode = "chase"
+			m6.visible = true
+			if w.grab_ui.visible:
+				ударов += 1
+				w.grab_ui._end(true)
+		say("  в убежище 45 с во время погони: ударов %d (ждём 0)" % [ударов])
+		if ударов > 0:
+			warn("убежище бьёт во время погони — тогда это не убежище")
 	if want.has("зрение"):
 		say("═══ КАДР ЧИСЛАМИ: ЧТО ВИДНО БЕЗ ГЛАЗ ═══")
 		stage_clean()

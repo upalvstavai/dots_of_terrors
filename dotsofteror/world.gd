@@ -243,6 +243,9 @@ var nests: Array = []           ## {pos, used}
 var nests_hit: int = 0
 var safe_cells: Array[Vector2i] = []
 var safe_sit: float = 0.0       ## сколько сидишь в убежище
+var safe_used: bool = false     ## это убежище уже треснуло — до выхода молчит
+var safe_where: Vector2i = Vector2i(-1, -1)   ## в каком убежище стоим сейчас
+var start_left: bool = false    ## игрок хоть раз вышел из стартовой комнаты
 var drop_t: float = 0.0         ## сколько ещё падать после выброса
 var still_t: float = 0.0        ## окно «замри» перед захватом щупалец
 var still_text: String = ""
@@ -7219,7 +7222,19 @@ const DRIP_POINTS := 22
 ## чьё-то рабочее место, которое бросили.
 const TABLES_PER_ROOM := 2   ## было 3: три стола в зале стоят стеной
 const DRIP_GAP := [45.0, 130.0]
-const SAFE_LIMIT := 7.0        ## сек в убежище, после которых стена трескается
+## СКОЛЬКО МОЖНО СИДЕТЬ В УБЕЖИЩЕ. Было семь секунд, и это оказалось главной
+## бедой игры для новичка. Играющий (20.09): «после катсцены с лицом щупальца
+## атакуют просто по кд, каждые 7-8 секунд». Складывалось так: до сорок пятой
+## секунды не бьёт ничего, сцена с лицом приходит примерно тогда же — и удары
+## читаются её последствием; стартовая клетка тоже убежище, а на её столе
+## записка и палочка, то есть новичок стоит ровно там; вырвался, неуязвимость
+## 3.2 с, и снова семь секунд — получается карусель.
+##
+## Семь секунд — это не «отсиживаться», это «стоять». Смысл правила в том,
+## чтобы нельзя было ПЕРЕЖДАТЬ в убежище всю игру, и для этого хватает
+## полминуты. Плюс два условия ниже: пока за тобой гонятся, убежище защищает
+## целиком, а треснув один раз, оно больше не трескается, пока не выйдешь.
+const SAFE_LIMIT := 30.0       ## сек в убежище, после которых стена трескается
 const BURST := [13.0, 24.0]    ## пауза между выпрыгиваниями из стен в фазе 3
 const BURST2 := [30.0, 55.0]   ## и вдвое реже во второй: разбавить, а не заменить третью
 var bursts: int = 0            ## сколько раз стена хлестнула за прогон — для стенда
@@ -7424,14 +7439,40 @@ func _nearest_safe() -> Vector2i:
 func _update_safe(delta: float) -> void:
 	if _clock < GRACE or _busy() or player_node == null:
 		return
-	var inside: bool = safe_zone.has(world_to_cell(player_node.global_position))
+	var here_s: Vector2i = world_to_cell(player_node.global_position)
+	var inside: bool = safe_zone.has(here_s)
+	# ПОКА НЕ ВЫШЕЛ ИЗ СТАРТОВОЙ КОМНАТЫ — она не трескается. Там записка и
+	# палочка, и первое, что делает человек в игре, — стоит и читает.
+	if not start_left and safe_zone.get(here_s, Vector2i(-1, -1)) != start_cell:
+		start_left = true
+	# ВЫШЕЛ — ЗНАЧИТ МОЖНО СНОВА. Треснув один раз, убежище молчит, пока игрок
+	# не покинет зал: иначе после вырывания отсчёт начинался заново на том же
+	# месте, и удары шли один за другим.
+	if not inside:
+		safe_used = false
+	# СМЕНИЛ УБЕЖИЩЕ — СЧЁТ С НУЛЯ. Иначе минуты, простоянные в одном зале,
+	# переносятся в другой, и он трескается в первую же секунду.
+	var центр: Vector2i = safe_zone.get(here_s, Vector2i(-1, -1))
+	if центр != safe_where:
+		safe_where = центр
+		safe_sit = 0.0
+		safe_used = false
 	# Вошёл — скажем об этом. Без строки игрок не связывает тёплый свет с тем,
 	# что монстр перестал идти.
 	if inside and safe_sit <= 0.0:
 		hud.text = Lang.t("h_safe")
-	safe_sit = safe_sit + delta if inside else 0.0
-	if safe_sit >= SAFE_LIMIT and player_node.invuln <= 0.0:
+	# ПОКА ГОНЯТСЯ — УБЕЖИЩЕ ЗАЩИЩАЕТ ЦЕЛИКОМ. Иначе оно обещает спасение и
+	# само же бьёт в спину через полминуты после того, как ты добежал.
+	var гонятся: bool = lurk_t > 0.0 or (monster != null and monster.visible
+		and monster.mode == "chase")
+	if гонятся:
 		safe_sit = 0.0
+		return
+	safe_sit = safe_sit + delta if inside else 0.0
+	if safe_sit >= SAFE_LIMIT and player_node.invuln <= 0.0 \
+			and start_left and not safe_used:
+		safe_sit = 0.0
+		safe_used = true
 		_start_grab(Lang.t("g_shelter"), "lash")
 	# «Безопасные» комнаты безопасны не полностью — один раз за забег.
 	if ambush_t > 0.0:
