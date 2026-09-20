@@ -74,6 +74,10 @@ var tutor: bool = false      ## обучающее полотно в проло�
 ## подсказок, как было: к третьему полотну правило уже в руках.
 const TEACH_N := 2
 var teach: bool = false
+## СНИМОК ДЛЯ МОЛЬБЕРТА: только лист, без интерфейса. Холст, стоящий в
+## коридоре, не должен показывать таймер, ленту порядка и подсказку — это
+## вещи открытого полотна, а не рисунка на нём.
+var preview: bool = false
 ## Полоска «ОНО ИДЁТ» теперь не только у двери: её включают, когда он
 ## действительно вышел за тобой.
 var show_near: bool = false
@@ -622,7 +626,7 @@ func _draw() -> void:
 		draw_rect(Rect2(0, minf(size.y, m.y + R), size.x, maxf(0.0, size.y - m.y - R)), dark)
 		draw_rect(Rect2(0, maxf(0.0, m.y - R), maxf(0.0, m.x - R), minf(size.y, R * 2)), dark)
 		draw_rect(Rect2(minf(size.x, m.x + R), maxf(0.0, m.y - R), maxf(0.0, size.x - m.x - R), minf(size.y, R * 2)), dark)
-	if dissolve <= 0.0:
+	if dissolve <= 0.0 and not preview:
 		_draw_hud(b)
 		if teach:
 			var tf := UI.text(600)

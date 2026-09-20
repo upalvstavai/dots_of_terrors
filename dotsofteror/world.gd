@@ -132,6 +132,10 @@ var exit_mark: MeshInstance3D
 var room_cells: Array[Vector2i] = []
 var room_rects: Array = []      ## прямоугольники тех же залов, для расстановки столов
 var shapes: Array = []
+## СИД КАЖДОГО ПОЛОТНА. Был случайным при каждом открытии — значит и точки на
+## нём каждый раз другие. Теперь он свой у каждого полотна и живёт весь забег:
+## что игрок видел на холсте в коридоре, то и увидит, открыв его.
+var canv_seed: Array[int] = []
 
 var done: int = 0          ## сдано полотен
 ## ЧТО ПЕРЕЖИВАЕТ СМЕРТЬ. Статическое: сцена грузится заново, скрипт остаётся.
@@ -654,6 +658,12 @@ func _ready() -> void:
 		add_child(into_layer)
 		into_t = 0.55
 	_apply_carry()
+	# ЧТО НА ХОЛСТЕ, ВИДНО ИЗДАЛЕКА. Полотно в коридоре было пустым зелёным
+	# прямоугольником на трёх палках: играющий (20.09) так и описал — «три
+	# палки и прямоугольник». Теперь на каждом мольберте с первой секунды
+	# стоят ТЕ ЖЕ точки, что игрок увидит, открыв его. Снимаем их не заново, а
+	# с самого полотна: рисует его один и тот же код, и разойтись они не могут.
+	_dress_easels()
 	_apply_madness()
 	set_process(true)
 	# СТЕНД. Запускается только по слову в командной строке, игры не касается:
@@ -2043,6 +2053,9 @@ func _place_features() -> void:
 		marks_sorted.append(canv_marks[k])
 	canv_cells = cells_sorted
 	canv_marks = marks_sorted
+	canv_seed.clear()
+	for k in canv_cells.size():
+		canv_seed.append(_rng.randi())
 
 	var bd2 := -1
 	for cell in dist:
@@ -2123,11 +2136,15 @@ func _easel(cell: Vector2i) -> MeshInstance3D:
 	canvas.mesh = cm
 	# И ТКАНЬ ЧАЩЕ. Один отрезок текстуры на 78 сантиметров растягивал волокно
 	# в мыло: полотно выглядело крашеной плоскостью, а не натянутой тряпкой.
-	var mat := _tex_material("paper", 3.0, Color(0.42, 0.90, 0.62), 0.9)
+	# ТЁМНЫЙ ХОЛСТ, СВЕТЯТСЯ ТОЧКИ. Полотно светилось ровной зелёной плоскостью
+	# и было видно издалека — но именно поэтому оно и читалось «прямоугольником
+	# на трёх палках»: на такой яркости точки на нём тонули. Открытое полотно
+	# выглядит наоборот: тёмный лист, а светят точки. Делаем так же.
+	var mat := _tex_material("paper", 3.0, Color(0.09, 0.10, 0.11), 0.9)
 	mat.emission_enabled = true
-	mat.emission = Color(0.22, 1.0, 0.62)
+	mat.emission = Color(0.16, 0.36, 0.26)
 	mat.emission_texture = mat.albedo_texture
-	mat.emission_energy_multiplier = 0.55
+	mat.emission_energy_multiplier = 0.10
 	canvas.material_override = mat
 	canvas.position = Vector3(0.0, 1.02, 0.06)
 	canvas.rotation_degrees = Vector3(-8, 0, 0)
@@ -3040,8 +3057,104 @@ func _near(cell: Vector2i) -> bool:
 	return player_node.global_position.distance_to(cell_to_world(cell, player_node.global_position.y)) < cell_size * 0.9
 
 
+## ТОЧКИ ВИДНО ИЗДАЛЕКА, А НЕ ПУСТОЙ ПРЯМОУГОЛЬНИК.
+##
+## Полотно в коридоре было светло-зелёной плоскостью на трёх палках — играющий
+## (20.09) так и сказал: «три палки и прямоугольник». А ведь это ТО ЖЕ полотно,
+## которое он откроет: пусть точки стоят на холсте с первой секунды.
+##
+## Кадр из окна полотна снимать не стали: съёмка SubViewport'а отдаёт то
+## прошлый кадр, то пустой, и на холсты уезжал интерфейс — лента порядка и
+## подсказка. Берём у полотна не картинку, а СПИСОК ТОЧЕК: тот же код, тот же
+## сид, значит те же точки, что игрок увидит внутри.
+func _dress_easels() -> void:
+	for i in canv_marks.size():
+		if i >= shapes.size() or i >= canv_seed.size():
+			break
+		var пробный := BoardScript.new()
+		add_child(пробный)
+		пробный.visible = false
+		пробный.tutor = false
+		пробный.open(shapes[i], i, 1.0, 0, canv_seed[i])
+		_put_dots(i, пробный.dots)
+		пробный.queue_free()
+
+
+## Точки на холст мольберта. Координаты полотна — доли от листа, где y растёт
+## ВНИЗ; холст стоит в мире, у него y растёт вверх.
+func _put_dots(i: int, dots: Array) -> void:
+	var canvas: MeshInstance3D = canv_marks[i]
+	var W: float = 0.78
+	var H: float = 0.62
+	for d in dots:
+		var фигура: bool = int(d["idx"]) >= 0
+		var col: Color = Shapes.PALETTE[int(d["col"])]
+		var m := MeshInstance3D.new()
+		# КРУГЛАЯ, А НЕ КВАДРАТНАЯ. Плоский квадратик на холсте читается
+		# пикселем; на полотне точка — это капля краски.
+		var sm := SphereMesh.new()
+		# Точка фигуры крупнее мусорной — ровно как на самом полотне.
+		var r: float = 0.020 if фигура else 0.013
+		sm.radius = r * 0.5
+		sm.height = r
+		sm.radial_segments = 10
+		sm.rings = 5
+		m.mesh = sm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = col
+		mat.emission_enabled = true
+		mat.emission = col
+		mat.emission_energy_multiplier = 1.4 if фигура else 0.8
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		# КРУГЛАЯ, А НЕ КВАДРАТНАЯ: квадратики на холсте читаются пикселями.
+		# ЛИЦЕВАЯ СТОРОНА ХОЛСТА — ПО −Z. Первый заход выложил точки на изнанку,
+		# и с той стороны, откуда на мольберт смотрят, их не было вовсе.
+		m.material_override = mat
+		# Чуть приплюснута к холсту: краска лежит на ткани, а не висит шариком.
+		m.scale = Vector3(1.0, 1.0, 0.45)
+		m.position = Vector3((float(d["nx"]) - 0.5) * W,
+			(0.5 - float(d["ny"])) * H, 0.013)
+		canvas.add_child(m)
+
+
+## Сдал — рисунок остаётся на мольберте. Линия по фигуре той же краской, что
+## вёл игрок: мимо этого полотна он пройдёт ещё не раз.
+func _draw_on_easel(i: int) -> void:
+	if i < 0 or i >= canv_marks.size() or i >= shapes.size():
+		return
+	var canvas: MeshInstance3D = canv_marks[i]
+	var W: float = 0.78
+	var H: float = 0.62
+	var pts: Array = shapes[i]["pts"]
+	for k in range(1, pts.size()):
+		var a: Vector2 = pts[k - 1]
+		var b: Vector2 = pts[k]
+		var p0 := Vector2((a.x - 0.5) * W, (0.5 - a.y) * H)
+		var p1 := Vector2((b.x - 0.5) * W, (0.5 - b.y) * H)
+		var середина: Vector2 = (p0 + p1) * 0.5
+		var дл: float = p0.distance_to(p1)
+		if дл < 0.001:
+			continue
+		var m := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(дл, 0.008, 0.004)
+		m.mesh = bm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.22, 1.0, 0.62)
+		mat.emission_enabled = true
+		mat.emission = Color(0.22, 1.0, 0.62)
+		mat.emission_energy_multiplier = 1.2
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		m.material_override = mat
+		m.position = Vector3(середина.x, середина.y, 0.016)
+		m.rotation = Vector3(0.0, 0.0, (p1 - p0).angle())
+		canvas.add_child(m)
+
+
 func _open_board() -> void:
-	board.open(shapes[done], done, fear * next_fear_mul, _madness_stage(), _rng.randi())
+	board.open(shapes[done], done, fear * next_fear_mul, _madness_stage(),
+		canv_seed[done] if done < canv_seed.size() else _rng.randi())
 	next_fear_mul = 1.0
 	board.visible = true
 	_board_to_easel()
@@ -3326,6 +3439,8 @@ func _on_solved() -> void:
 		await get_tree().create_timer(0.5).timeout
 		if board == null or not board.visible:
 			return
+	# ДОРИСОВАННОЕ ОСТАЁТСЯ НА МОЛЬБЕРТЕ.
+	_draw_on_easel(done - 1)
 	_close_board()
 	_update_hud()
 	_refresh_marks()
@@ -4481,18 +4596,20 @@ func _refresh_marks() -> void:
 		# Сила свечения ЗДЕСЬ перебивала ту, что задана при создании метки, и
 		# фактура снова тонула в ровной заливке. Держим её низкой: метку и так
 		# видно издалека, а вблизи должно быть понятно, что это вещь.
+		# С КАРТИНКОЙ НА ХОЛСТЕ ЦВЕТ НЕ ТРОГАЕМ. Цвет умножается на текстуру, и
+		# прежняя раскраска состояний перекрашивала снятый кадр в зелень —
+		# точки пропадали, и холст снова становился прямоугольником. Состояние
+		# показываем одной только силой свечения: сданное тусклое, нынешнее
+		# яркое, будущее между ними.
+		# СОСТОЯНИЕ — ТОЛЬКО СИЛОЙ СВЕЧЕНИЯ САМОГО ХОЛСТА. Цветом его красить
+		# больше нельзя: на холсте стоят точки, и зелёная заливка топит их.
+		# Нынешнее полотно чуть светлее, сданное почти гаснет.
 		if i < done:
-			mat.albedo_color = Color(0.20, 0.26, 0.22)
-			mat.emission = Color(0.10, 0.16, 0.13)
-			mat.emission_energy_multiplier = 0.10
+			mat.emission_energy_multiplier = 0.05
 		elif i == done:
-			mat.albedo_color = Color(0.42, 0.90, 0.62)
-			mat.emission = Color(0.22, 1.0, 0.62)
-			mat.emission_energy_multiplier = 0.55
+			mat.emission_energy_multiplier = 0.16
 		else:
-			mat.albedo_color = Color(0.28, 0.48, 0.36)
-			mat.emission = Color(0.16, 0.40, 0.28)
-			mat.emission_energy_multiplier = 0.20
+			mat.emission_energy_multiplier = 0.09
 	if exit_mark != null:
 		var em: StandardMaterial3D = exit_mark.material_override
 		var live := done >= n_canv

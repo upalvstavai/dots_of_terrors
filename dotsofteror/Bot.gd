@@ -2998,6 +2998,61 @@ func run(want: Array) -> void:
 		say("  в убежище 45 с во время погони: ударов %d (ждём 0)" % [ударов])
 		if ударов > 0:
 			warn("убежище бьёт во время погони — тогда это не убежище")
+	if want.has("мольберт"):
+		say("═══ ЧТО ВИДНО НА ХОЛСТЕ ИЗДАЛЕКА ═══")
+		stage_clean()
+		var p7 = w.player_node
+		p7.invuln = 9999.0
+		w.monster.visible = false
+		w.monster.mode = "inwall"
+		w.monster.resurface_t = 9999.0
+		await w.get_tree().create_timer(1.0).timeout
+		# ПЕРЕД ХОЛСТОМ, А НЕ СБОКУ. У мольберта случайный поворот, и «встать в
+		# двух метрах по X» — это встать к нему ребром: на кадре были три палки
+		# с торца, и судить по нему было не о чем.
+		var холст: MeshInstance3D = w.canv_marks[0]
+		# ЛИЦЕВАЯ СТОРОНА ХОЛСТА — ПО +Z: туда он и смотрит на мольберте.
+		var перед: Vector3 = холст.global_transform.basis.z.normalized()
+		# Физику выключаем: иначе тело выталкивает из мольберта и стены, и
+		# камера уезжает туда, где смотреть не на что.
+		p7.set_physics_process(false)
+		# Голову ведём сами: сценарный взгляд у стенда то включён, то нет, а
+		# кадр нужен ровно один — в холст.
+		# СНИМАЕМ СРАЗУ. Мир каждый кадр возвращает игроку физику, и тело
+		# выталкивает от мольберта: если ждать секунду, камера уезжает.
+		for _q in 3:
+			p7.global_position = холст.global_position + перед * 1.6
+			p7.global_position.y = холст.global_position.y \
+				+ (PlayerScript.STAND_Y - PlayerScript.EYE_Y)
+			p7.aim_head(холст.global_position, 40.0, 0.2)
+			await w.get_tree().process_frame
+		p7.global_position = холст.global_position + перед * 1.6
+		p7.global_position.y = холст.global_position.y \
+			+ (PlayerScript.STAND_Y - PlayerScript.EYE_Y)
+		p7.aim_head(холст.global_position, 40.0, 0.2)
+		# И ВЗВОД СНИМАЕМ: иначе игра откроет полотно, стоит подойти ближе
+		# трёх с половиной метров, и в кадре будет открытый лист.
+		w.canvas_arm = false
+		# ПОЛОТНО ЗАКРЫВАЕМ. Проходя мимо, бот открывает его сам, а открытое
+		# полотно ПРЯЧЕТ холст мольберта — и в кадре остаются три палки.
+		if w.board != null and w.board.visible:
+			w._close_board()
+		if w.board_face != null:
+			w.board_face.visible = false
+		if w.board_easel != null:
+			w.board_easel.visible = true
+		var мат: StandardMaterial3D = холст.material_override
+		say("холст: размер %s, положение %s" % [
+			str((холст.mesh as BoxMesh).size), str(холст.global_position)])
+		say("холст: виден %s, в дереве %s, детей %d, свечение %.2f, цвет %s" % [
+			str(холст.visible), str(холст.is_visible_in_tree()),
+			холст.get_child_count(), мат.emission_energy_multiplier,
+			str(мат.albedo_color)])
+		say("снимок на холсте: %s" % [str(мат.albedo_texture != null)])
+		if мат.albedo_texture == null:
+			warn("на мольберте нет картинки полотна")
+		в_кадре(холст.global_position, "холст")
+		await shot("мольберт_издали")
 	if want.has("видение"):
 		say("═══ КАРТИНКИ ЗА ПОЛОТНАМИ ═══")
 		stage_clean()
@@ -3307,6 +3362,15 @@ func _watch() -> void:
 			await solve_board()
 			_drawing = false
 			continue
+		# КАДР МОЛЬБЕРТА ПО ДОРОГЕ. Самый честный способ увидеть полотно так,
+		# как его видит игрок: подходя к нему своими ногами.
+		if not was.get("мольберт", false) and w.done < w.canv_cells.size():
+			var до: float = w.player_node.global_position.distance_to(
+				w.cell_to_world(w.canv_cells[w.done], PlayerScript.STAND_Y))
+			if до < 3.6 and до > 2.2:
+				was["мольберт"] = true
+				say("кадр мольберта: до полотна %.1f м" % [до])
+				await shot("проход_мольберт")
 		# Хватают — ВЫРЫВАЕМСЯ. Именно так это и задумано: не ждать, а жать.
 		if w.grab_ui != null and w.grab_ui.visible:
 			# КАДР ХВАТА В НАСТОЯЩЕЙ ИГРЕ. Отдельная сцена «поимка» снимает хват
