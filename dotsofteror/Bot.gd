@@ -1074,7 +1074,7 @@ func scene_silhouette() -> void:
 	m.prowl = false
 	m.mode = "chase"
 	m.stun = 0.0
-	for клеток in [3, 6, 9, 12]:
+	for клеток in [1, 2, 3, 6, 9]:
 		var где: Vector2i = _clear_spot(клеток)
 		if где.x < 0:
 			warn("на карте нет прямого коридора длиной %d клеток" % [клеток])
