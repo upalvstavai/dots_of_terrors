@@ -107,6 +107,11 @@ func _ready() -> void:
 	# ловить её надо ими, а не глазом.
 	if OS.get_cmdline_user_args().has("дыра"):
 		_hole_probe.call_deferred()
+	# СМОТРОВАЯ ДЛЯ УЛИЦЫ. Дома вдали играющий описал как «гладкие кубы с
+	# окнами»: судить об этом можно только с того места, откуда он их видел, —
+	# с начала тротуара. Ключ «-- улица» снимает три кадра оттуда.
+	if OS.get_cmdline_user_args().has("улица"):
+		_street_probe.call_deferred()
 	_build_stuff()
 	player = PlayerScene.instantiate()
 	add_child(player)
@@ -161,6 +166,22 @@ func _ready() -> void:
 		ev.physical_keycode = KEY_E
 		InputMap.action_add_event("read", ev)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## ПРИЗМА — ЭТО КРЫША. Всё в этой сцене собрано из коробок, и потому дома вдали
+## читались коробками: у дома силуэт решает всё, а плоская плита сверху — это
+## силуэт склада. Треугольная призма даёт скат, и дом узнаётся с любого
+## расстояния, даже когда стен уже не разобрать.
+func _prism(size: Vector3, pos: Vector3, mat: Material, yaw: float = 0.0) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var pm := PrismMesh.new()
+	pm.size = size
+	mi.mesh = pm
+	mi.material_override = mat
+	mi.position = pos
+	mi.rotation = Vector3(0.0, yaw, 0.0)
+	add_child(mi)
+	return mi
 
 
 func _box(size: Vector3, pos: Vector3, mat: Material, solid: bool = true) -> MeshInstance3D:
@@ -348,7 +369,9 @@ func _build_room() -> void:
 	rib_mat.emission_enabled = true
 	rib_mat.emission = Color(0.32, 0.30, 0.30)
 	rib_mat.emission_energy_multiplier = 0.09
-	var ry: float = -1.2
+	# ПЕРВОЕ КОЛЬЦО — ГЛУБЖЕ. На высоте 1.2 м его достаёт лампа из комнаты, и
+	# светлый прямоугольник в шахте читается дном коробки: «упасть некуда».
+	var ry: float = -2.6
 	while ry > -deep + 1.0:
 		for r in [[Vector3(hr * 2.0, 0.10, 0.10), Vector3(hx, ry, hz - hr + 0.05)],
 				[Vector3(hr * 2.0, 0.10, 0.10), Vector3(hx, ry, hz + hr - 0.05)],
@@ -1215,13 +1238,54 @@ func _street_houses(dx: float, z1: float) -> void:
 			var back: float = hrng.randf_range(0.0, 1.6)
 			var zz: float = line + float(row) * (d * 0.5 + back)
 			var mat: StandardMaterial3D = walls[hrng.randi() % walls.size()]
-			_box(Vector3(w, h, d), Vector3(x + w * 0.5, h * 0.5, zz), mat, false)
-			# Снег на крыше — плита чуть шире дома с напуском.
-			_box(Vector3(w + 0.5, 0.35, d + 0.5), Vector3(x + w * 0.5, h + 0.14, zz), snow, false)
-			# Карниз: без него коробка остаётся коробкой.
-			_box(Vector3(w + 0.7, 0.3, d + 0.7), Vector3(x + w * 0.5, h - 0.2, zz),
+			var cx0: float = x + w * 0.5
+			_box(Vector3(w, h, d), Vector3(cx0, h * 0.5, zz), mat, false)
+			# ЦОКОЛЬ. Тёмная полоса понизу: дом стоит НА чём-то, а не воткнут
+			# в снег. Стоит одну коробку, а низ фасада перестаёт висеть.
+			_box(Vector3(w + 0.16, 0.9, d + 0.16), Vector3(cx0, 0.45, zz),
+				_mat(Color(0.20, 0.19, 0.19)), false)
+			# МЕЖЭТАЖНЫЕ ТЯГИ. Горизонтальные рёбра по фасаду через этаж: на
+			# расстоянии именно они не дают стене остаться гладкой плоскостью.
+			var эт: float = 1.8
+			while эт < h - 1.4:
+				_box(Vector3(w + 0.18, 0.12, d + 0.18), Vector3(cx0, эт + 1.25, zz),
+					_mat(Color(0.30, 0.29, 0.28)), false)
+				эт += 2.6
+			# Карниз под крышей.
+			_box(Vector3(w + 0.7, 0.3, d + 0.7), Vector3(cx0, h - 0.2, zz),
 				_mat(Color(0.26, 0.25, 0.25)), false)
-			_house_windows(x + w * 0.5, zz, w, h, d, float(row), hrng)
+			_house_windows(cx0, zz, w, h, d, float(row), hrng)
+			# КРЫША. Две трети домов — со скатом, остальные плоские с парапетом:
+			# ровный квартал одинаковых двускатных домиков читается деревней, а
+			# не городской улицей.
+			if hrng.randf() < 0.66:
+				var rh: float = hrng.randf_range(1.6, 3.0)
+				# Конёк вдоль улицы: призма вытянута по X, значит разворот на
+				# четверть оборота — PrismMesh тянет треугольник вдоль Z.
+				_prism(Vector3(d, rh, w), Vector3(cx0, h + rh * 0.5, zz),
+					_mat(Color(0.20, 0.19, 0.20)), PI * 0.5)
+				# Снег лежит НА скате, чуть большей призмой и выше на ладонь.
+				_prism(Vector3(d + 0.35, rh * 0.94, w + 0.35),
+					Vector3(cx0, h + rh * 0.5 + 0.16, zz), snow, PI * 0.5)
+			else:
+				_box(Vector3(w + 0.4, 0.35, d + 0.4), Vector3(cx0, h + 0.17, zz),
+					snow, false)
+				# Парапет: тонкая стенка по краю плоской крыши.
+				for сд in [-1.0, 1.0]:
+					_box(Vector3(w + 0.5, 0.55, 0.18),
+						Vector3(cx0, h + 0.4, zz + сд * (d * 0.5 + 0.2)),
+						_mat(Color(0.28, 0.27, 0.26)), false)
+			# ТРУБЫ. Одна-две на дом, со снежной шапкой. Именно они на дальнем
+			# плане превращают ряд коробок в крыши: вертикальные засечки поверх
+			# ровной линии кровли.
+			for _t in range(1, hrng.randi_range(2, 3)):
+				var tx: float = cx0 + hrng.randf_range(-w * 0.3, w * 0.3)
+				var tz: float = zz + hrng.randf_range(-d * 0.25, d * 0.25)
+				var th2: float = hrng.randf_range(1.0, 1.9)
+				_box(Vector3(0.55, th2, 0.55), Vector3(tx, h + th2 * 0.5, tz),
+					_mat(Color(0.24, 0.20, 0.19)), false)
+				_box(Vector3(0.7, 0.12, 0.7), Vector3(tx, h + th2 + 0.05, tz),
+					snow, false)
 			x += w + hrng.randf_range(0.6, 2.4)
 
 
@@ -1253,6 +1317,10 @@ func _house_windows(cx: float, cz: float, w: float, h: float, d: float,
 				_mat(Color(0.12, 0.12, 0.13)), false)
 			_box(Vector3(1.0, 1.4, 0.05), Vector3(wx, wy, face_z - row * 0.026),
 				lit if on else dark, false)
+			# ПОДОКОННИК. Светлая полочка под окном: с улицы она ловит свет и
+			# отделяет окно от стены — без неё окно остаётся наклейкой.
+			_box(Vector3(1.3, 0.1, 0.16), Vector3(wx, wy - 0.82, face_z - row * 0.07),
+				_mat(Color(0.52, 0.51, 0.49)), false)
 
 
 ## ФОНАРИ вдоль улицы: столб, кронштейн и тёплое пятно на снегу.
@@ -1479,47 +1547,97 @@ func _build_stuff() -> void:
 	# торчащие внутрь дыры и вниз, разной длины и вразнобой. Отсюда три правила:
 	# узкие, направленные к центру, и наклонённые в дыру, а не из неё.
 	var brk := _tex("floorwood", 0.55, Color(0.40, 0.31, 0.23))
-	# НОСОМ В ДЫРУ. Первый заход развернул щепу поперёк и наружу — получилась
-	# звезда из досок, ещё хуже створок. Длина у _part идёт по локальной Z,
-	# значит рысканье надо считать от направления К ЦЕНТРУ, а не от угла на
-	# ободе; и половину длины свесить над пустотой, иначе щепка просто лежит
-	# на полу.
-	# ВЫЛЕТ КОРОТКИЙ. Второй заход дал щепу до самого центра: она сошлась в
-	# середине и закрыла собой дыру, ради которой всё и затевалось. Корень
-	# держим на ободе, а внутрь свешиваем меньше половины радиуса — тогда
-	# край рваный, но дыра остаётся дырой.
-	var R0: float = 0.92
-	for i in 26:
-		var a2: float = TAU * float(i) / 26.0 + randf_range(-0.16, 0.16)
-		var rim := Vector3(cos(a2), 0.0, sin(a2))
-		var ln: float = 0.18 + randf() * 0.22
-		var shard := _part(hole, Vector3(0.035 + randf() * 0.075,
-			0.035 + randf() * 0.03, ln),
-			rim * (R0 - ln * 0.5) + Vector3(0.0, 0.015, 0.0), brk)
-		shard.rotation = Vector3(-randf_range(0.12, 0.62),
-			atan2(-rim.x, -rim.z), randf_range(-0.16, 0.16))
-	# И НЕСКОЛЬКО ДЛИННЫХ, повисших над пустотой: они и делают край рваным,
-	# потому что заходят в дыру дальше остальных.
-	for i in 5:
-		var a4: float = randf() * TAU
-		var rim4 := Vector3(cos(a4), 0.0, sin(a4))
-		var ln4: float = 0.42 + randf() * 0.20
-		var sp := _part(hole, Vector3(0.05 + randf() * 0.05, 0.03, ln4),
-			rim4 * (R0 - ln4 * 0.5) + Vector3(0.0, 0.005, 0.0), brk)
-		sp.rotation = Vector3(-randf_range(0.30, 0.85),
-			atan2(-rim4.x, -rim4.z), randf_range(-0.22, 0.22))
-	# ПЛОСКИЕ КУСКИ ВОКРУГ. Их задача — закрыть прямой угол выреза в полу:
-	# дыра круглая, а вырезан квадрат, и без них его углы торчат серыми
-	# треугольниками. Лежат почти плашмя, наклон в пределах седьмой доли
-	# радиана: приподними их сильнее — и снова получатся створки.
-	for i in 12:
-		var a5: float = TAU * float(i) / 12.0 + randf_range(-0.14, 0.14)
-		var rim5 := Vector3(cos(a5), 0.0, sin(a5))
-		var fl := _part(hole, Vector3(0.16 + randf() * 0.16, 0.035,
-			0.20 + randf() * 0.20),
-			rim5 * (1.02 + randf() * 0.16) + Vector3(0.0, 0.016, 0.0), brk)
-		fl.rotation = Vector3(randf_range(-0.14, 0.14),
-			atan2(-rim5.x, -rim5.z), randf_range(-0.12, 0.12))
+	# ПОЛ ЛОМАЕТСЯ ВДОЛЬ ДОСОК, А НЕ ПО КРУГУ.
+	#
+	# Здесь дважды стояло кольцо: сначала четырнадцать широких створок, потом
+	# двадцать шесть щепок, разложенных через равный угол. И оба раза играющий
+	# говорил одно и то же — «края дыры дрожат как двери». Замер показал, что
+	# дрожи нет вовсе: при неподвижной камере кадр не меняется ни на пиксель.
+	# Дело не в мерцании, а в ЧТЕНИИ: ровное кольцо одинаковых плоских кусков
+	# вокруг круглой дыры читается лопастями, люками, диафрагмой — чем угодно,
+	# кроме проломленного пола.
+	#
+	# Настоящий пол — это доски, и у пролома две разные стороны. Там, где доска
+	# переломилась поперёк, торчит ТОРЕЦ шириной в доску. Там, где трещина
+	# пошла вдоль волокна, отходит длинная узкая ЩЕПА. Плюс пропуски: часть
+	# досок обламывается вровень с краем и не торчит никуда.
+	var half: float = 0.85          ## половина выреза, см. hr выше
+	var plank: float = 0.13         ## ширина половицы
+	# ТОРЦЫ. Две стороны, поперечные доскам: идём вдоль края шагом в доску.
+	for sz in [-1.0, 1.0]:
+		var x: float = -half + 0.02
+		while x < half - 0.02:
+			var w: float = plank * randf_range(0.75, 1.15)
+			var вылет: float = 0.0
+			var r: float = randf()
+			if r < 0.14:
+				вылет = 0.0                      # обломилась вровень
+			elif r < 0.85:
+				вылет = randf_range(0.04, 0.16)  # торчит немного
+			else:
+				вылет = randf_range(0.18, 0.34)  # длинный обломок
+			if вылет > 0.001:
+				var th: float = 0.022 + randf() * 0.016
+				var end := _part(hole, Vector3(w * 0.92, th, вылет),
+					Vector3(x + w * 0.5, 0.012 - вылет * 0.10,
+						sz * (half - вылет * 0.5)), brk)
+				# Наклон ВНИЗ, в дыру, и небольшой поворот: доска, которая
+				# сломалась, не остаётся горизонтальной.
+				end.rotation = Vector3(sz * randf_range(0.05, 0.40),
+					randf_range(-0.09, 0.09), randf_range(-0.10, 0.10))
+			x += w
+	# ЩЕПА ВДОЛЬ ВОЛОКНА. Две другие стороны: здесь доска не переломилась, а
+	# расщепилась, и в дыру заходят узкие длинные занозы разной длины.
+	for sx in [-1.0, 1.0]:
+		var z: float = -half + 0.05
+		while z < half - 0.05:
+			var шаг: float = randf_range(0.07, 0.19)
+			if randf() < 0.45:
+				var дл: float = randf_range(0.10, 0.46)
+				var шир: float = 0.012 + randf() * 0.030
+				var sl := _part(hole, Vector3(дл, 0.016 + randf() * 0.012, шир),
+					Vector3(sx * (half - дл * 0.5), 0.010 - дл * 0.06, z), brk)
+				sl.rotation = Vector3(randf_range(-0.10, 0.10),
+					randf_range(-0.05, 0.05), sx * randf_range(0.08, 0.5))
+			z += шаг
+	# КРОМКА. Даже с обломанными торцами вырез остаётся РОВНОЙ ЛИНИЕЙ: квадрат
+	# видно по прямому срезу, особенно с ближней стороны, откуда игрок и
+	# смотрит. Поэтому по всему периметру идёт мелкая щепа вплотную к краю —
+	# сантиметры, а не десятки, — и прямая перестаёт быть прямой.
+	for сторона in 4:
+		var вдоль: float = -half
+		while вдоль < half:
+			var дш: float = randf_range(0.03, 0.09)
+			var выс: float = randf_range(0.010, 0.026)
+			var глуб: float = randf_range(0.02, 0.07)
+			var наружу: float = randf_range(-0.02, 0.03)
+			var поз: Vector3
+			var пов: Vector3
+			match сторона:
+				0: поз = Vector3(вдоль + дш * 0.5, выс * 0.4, -half + наружу)
+				1: поз = Vector3(вдоль + дш * 0.5, выс * 0.4, half - наружу)
+				2: поз = Vector3(-half + наружу, выс * 0.4, вдоль + дш * 0.5)
+				_: поз = Vector3(half - наружу, выс * 0.4, вдоль + дш * 0.5)
+			var разм: Vector3 = (Vector3(дш, выс, глуб) if сторона < 2
+				else Vector3(глуб, выс, дш))
+			пов = Vector3(randf_range(-0.25, 0.25), randf_range(-0.3, 0.3),
+				randf_range(-0.25, 0.25))
+			var chip := _part(hole, разм, поз, brk)
+			chip.rotation = пов
+			вдоль += дш + randf_range(0.0, 0.03)
+	# И ДВЕ-ТРИ ДОСКИ, ПОВИСШИЕ В ДЫРЕ. Они держатся одним концом и уходят
+	# вниз круто: это и говорит, что под полом пустота, а не подвал по колено.
+	for i in 3:
+		var сторона: int = i % 2
+		var поперёк: float = randf_range(-half * 0.7, half * 0.7)
+		var зн: float = 1.0 if randf() < 0.5 else -1.0
+		var дл2: float = 0.34 + randf() * 0.26
+		var ph := _part(hole, Vector3(plank * 0.9, 0.024, дл2),
+			(Vector3(поперёк, -дл2 * 0.30, зн * (half - дл2 * 0.30)) if сторона == 0
+				else Vector3(зн * (half - дл2 * 0.30), -дл2 * 0.30, поперёк)), brk)
+		ph.rotation = (Vector3(зн * randf_range(0.7, 1.1), 0.0, randf_range(-0.12, 0.12))
+			if сторона == 0
+			else Vector3(randf_range(-0.12, 0.12), PI * 0.5, зн * randf_range(0.7, 1.1)))
 	# Пара досок, отлетевших от края. Пол не проваливается аккуратно.
 	for i in 4:
 		var a3: float = randf() * TAU
@@ -2325,6 +2443,28 @@ func _process(delta: float) -> void:
 
 
 ## Снять пролом: открыть, встать перед ним и отдать три кадра подряд.
+func _street_probe() -> void:
+	await get_tree().process_frame
+	player.set_physics_process(false)
+	var кадры := [
+		[Vector3(-13.0, PlayerScript.STAND_Y, street_door_z + 1.8), -PI * 0.5, -2.0],
+		[Vector3(-6.0, PlayerScript.STAND_Y, street_door_z + 2.6), -PI * 0.5, 2.0],
+		[Vector3(-9.0, PlayerScript.STAND_Y, street_door_z + 3.0), -PI * 0.75, 4.0],
+	]
+	for i in кадры.size():
+		player.global_position = кадры[i][0]
+		player.yaw = float(кадры[i][1])
+		player.rotation.y = player.yaw
+		player.pitch = deg_to_rad(float(кадры[i][2]))
+		player.head.rotation.x = player.pitch
+		for _k in 8:
+			await get_tree().process_frame
+		await RenderingServer.frame_post_draw
+		get_viewport().get_texture().get_image().save_png("user://улица_%d.png" % i)
+	print("[улица] снято ", кадры.size(), " кадра")
+	get_tree().quit()
+
+
 func _hole_probe() -> void:
 	await get_tree().process_frame
 	stage = 3
@@ -2345,11 +2485,34 @@ func _hole_probe() -> void:
 	player.pitch = deg_to_rad(-40.0)
 	player.rotation.y = player.yaw
 	player.head.rotation.x = player.pitch
+	# МЕРЦАНИЕ МЕРИМ, А НЕ УГАДЫВАЕМ. Играющий: «края дыры всё ещё дрожат».
+	# Дрожь видна только в движении, поэтому сдвигаем камеру на сантиметр между
+	# кадрами и считаем, какая доля пикселей изменилась сильно. Совпадающие
+	# поверхности дают крапчатую разницу по всему краю; честное изменение
+	# картинки от сдвига — ровное и мелкое.
+	var prev: Image = null
 	for i in 4:
+		# Первые два кадра — камера СТОИТ: это опора. Дальше сдвигаем на сантиметр.
+		if i >= 2:
+			player.global_position.z += 0.01
 		for _k in 6:
 			await get_tree().process_frame
 		await RenderingServer.frame_post_draw
-		get_viewport().get_texture().get_image().save_png(
-			"user://дыра_%d.png" % i)
+		var img: Image = get_viewport().get_texture().get_image()
+		img.save_png("user://дыра_%d.png" % i)
+		if prev != null:
+			var менялось: int = 0
+			var всего: int = 0
+			for y in range(int(img.get_height() * 0.45), int(img.get_height() * 0.95), 4):
+				for x in range(0, img.get_width(), 4):
+					var a1: Color = prev.get_pixel(x, y)
+					var b1: Color = img.get_pixel(x, y)
+					var d1: float = absf(a1.r - b1.r) + absf(a1.g - b1.g) + absf(a1.b - b1.b)
+					if d1 > 0.10:
+						менялось += 1
+					всего += 1
+			print("[дыра] кадр %d (%s): сильно изменилось %d%% точек низа кадра"
+				% [i, "камера стоит" if i < 2 else "сдвиг 1 см", 100 * менялось / maxi(всего, 1)])
+		prev = img
 	print("[дыра] снято 4 кадра")
 	get_tree().quit()
