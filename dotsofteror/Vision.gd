@@ -121,10 +121,11 @@ func _close() -> void:
 	closed.emit()
 
 
-## Лист. Тот же прямоугольник, на котором игрок только что рисовал.
+## Лист. Отношение сторон — как у самих картинок (16:9): иначе по краям
+## остаются чёрные поля, и лист перестаёт быть листом.
 func _sheet() -> Rect2:
-	var w: float = size.x * 0.62
-	var h: float = w * 0.66
+	var w: float = size.x * 0.66
+	var h: float = w * 0.5627
 	return Rect2((size.x - w) * 0.5, (size.y - h) * 0.46, w, h)
 
 
@@ -174,10 +175,17 @@ func _draw_sheet() -> void:
 		var вид := Rect2(b.position + (b.size - ts * scale) * 0.5, ts * scale)
 		# Уже проявленная часть: сверху вниз.
 		var h: float = вид.size.y * k
-		_sheet_node.draw_texture_rect_region(tex,
-			Rect2(вид.position, Vector2(вид.size.x, h)),
-			Rect2(Vector2.ZERO, Vector2(ts.x, ts.y * k)),
-			Color(1, 1, 1, f))
+		# ПРИГЛУШАЕМ. Картинки светлее всего, что есть в игре: две из семи почти
+		# белые. На тёмном коридоре такой лист бьёт по глазам, как вспышка.
+		# Гасим на четверть — рисунок остаётся читаемым, а глаз не слепнет.
+		# РИСУЕМ ЦЕЛИКОМ, А НЕПРОЯВЛЕННОЕ ЗАКРЫВАЕМ. Вырезание куска
+		# (draw_texture_rect_region) на этих картинках отдавало ровную заливку —
+		# лист выходил пустым и светлым. Полный кадр рисуется верно, а
+		# проявление делает полоса, которая едет сверху вниз.
+		_sheet_node.draw_texture_rect(tex, вид, false, Color(0.76, 0.76, 0.78, f))
+		if k < 1.0:
+			_sheet_node.draw_rect(Rect2(вид.position.x, вид.position.y + h,
+				вид.size.x, вид.size.y - h), Color(0.035, 0.035, 0.045, f))
 		# Полоса, за которой идёт проявление: мокрая бумага светится краской.
 		if k < 1.0:
 			var y: float = вид.position.y + h
@@ -194,13 +202,23 @@ func _draw_sheet() -> void:
 				_rng.randf() * вид.size.y * k)
 			_sheet_node.draw_circle(p, 0.6 + _rng.randf() * 1.6,
 				Color(0.0, 0.0, 0.0, 0.05 + _rng.randf() * 0.10))
-		for i in 10:
-			var u: float = float(i) / 10.0
-			var m: float = вид.size.x * 0.10 * (1.0 - u)
-			_sheet_node.draw_rect(Rect2(вид.position, Vector2(m, вид.size.y)),
-				Color(0, 0, 0, 0.05 * f))
-			_sheet_node.draw_rect(Rect2(вид.position.x + вид.size.x - m, вид.position.y,
-				m, вид.size.y), Color(0, 0, 0, 0.05 * f))
+		# МЕЛКИМ ШАГОМ. Десять полос по краю давали видимые ступени — на светлых
+		# листах (белая дверь) они читались полосатой рамкой. Двадцать восемь
+		# слабых полос по всем четырём сторонам сходят в тень незаметно.
+		for i in 28:
+			var u: float = float(i) / 28.0
+			var mx: float = вид.size.x * 0.13 * (1.0 - u)
+			var my: float = вид.size.y * 0.10 * (1.0 - u)
+			var a2: float = 0.022 * f
+			_sheet_node.draw_rect(Rect2(вид.position, Vector2(mx, вид.size.y)),
+				Color(0, 0, 0, a2))
+			_sheet_node.draw_rect(Rect2(вид.position.x + вид.size.x - mx,
+				вид.position.y, mx, вид.size.y), Color(0, 0, 0, a2))
+			_sheet_node.draw_rect(Rect2(вид.position, Vector2(вид.size.x, my)),
+				Color(0, 0, 0, a2))
+			_sheet_node.draw_rect(Rect2(вид.position.x,
+				вид.position.y + вид.size.y - my, вид.size.x, my),
+				Color(0, 0, 0, a2))
 	else:
 		# Файла нет — лист остаётся пустым, и мы просто не задерживаем игру.
 		# Так игра живёт и без картинок: они добавляются по одной.
@@ -222,18 +240,37 @@ func _свет(c: Vector2, r: float, col: Color, сила: float = 0.5) -> void:
 		Color(col.r, col.g, col.b, col.a * сила))
 
 
-## Картинка листа. Файлы кладутся в tex/ и называются лист_1 … лист_7; формат
-## любой из тех, что понимает Godot (png, jpg, webp). Нет файла — нет и показа:
-## игра от этого не ломается, картинки можно добавлять по одной.
-static func путь(n: int) -> String:
-	return "res://tex/лист_%d.png" % (n + 1)
+## ПОРЯДОК — ПО СЮЖЕТУ, А НЕ ПО ИМЕНАМ ФАЙЛОВ. Картинки пришли из генератора
+## пронумерованными по-своему: взрыв лежит седьмым, хотя по рассказу он первый.
+## Здесь они выстроены так, как их задумал автор:
+##   1. взрыв
+##   2. свет и то, что в нём: синие глаза, кулак в лицо
+##   3. женщина падает в огонь
+##   4. человек перед светящейся дверью
+##   5. он оборачивается, а сбоку стоит тёмная фигура
+##   6. они вдвоём перед второй дверью
+##   7. мужчина падает в котёл, тянет руку
+const ЛИСТЫ := [
+	"07-explosion",
+	"01-blue-eyed-creature",
+	"02-woman-falling-into-fire",
+	"03-man-before-yellow-door",
+	"04-man-and-shadow-figure",
+	"05-two-before-second-door",
+	"06-man-falling-into-black-cauldron",
+]
 
 
 func _tex_for(n: int) -> Texture2D:
-	for ext in ["png", "jpg", "jpeg", "webp"]:
-		var p: String = "res://tex/лист_%d.%s" % [n + 1, ext]
+	if n >= 0 and n < ЛИСТЫ.size():
+		var p: String = "res://tex/story_images_v2/%s.png" % ЛИСТЫ[n]
 		if ResourceLoader.exists(p):
 			return load(p) as Texture2D
+	# Запасной путь: простые имена лист_1 … лист_7 рядом с остальными текстурами.
+	for ext in ["png", "jpg", "jpeg", "webp"]:
+		var p2: String = "res://tex/лист_%d.%s" % [n + 1, ext]
+		if ResourceLoader.exists(p2):
+			return load(p2) as Texture2D
 	return null
 
 

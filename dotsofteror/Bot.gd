@@ -3060,9 +3060,17 @@ func run(want: Array) -> void:
 		w.monster.visible = false
 		w.monster.mode = "inwall"
 		w.monster.resurface_t = 9999.0
-		for n in [0, 1]:
+		for n in 7:
+			if not w.vision_ui.есть(n):
+				warn("нет картинки для полотна %d" % [n + 1])
+				continue
+			var t9: Texture2D = w.vision_ui._tex_for(n)
+			say("картинка %d: %s, размер %dx%d" % [n + 1,
+				str(t9.resource_path if t9 != null else "нет"),
+				t9.get_width() if t9 != null else 0,
+				t9.get_height() if t9 != null else 0])
 			w.vision_ui.show_one(n)
-			await w.get_tree().create_timer(2.8).timeout
+			await w.get_tree().create_timer(3.0).timeout
 			await shot("видение_%d" % (n + 1))
 			w.vision_ui._close()
 			await w.get_tree().create_timer(0.3).timeout
@@ -3361,6 +3369,13 @@ func _watch() -> void:
 			ev["рисовал"] = int(ev.get("рисовал", 0)) + 1
 			await solve_board()
 			_drawing = false
+			continue
+		# КАРТИНКУ ЗАКРЫВАЕМ. После сданного полотна на весь экран проступает
+		# кадр чужой истории; человек его смотрит, а стенд меряет игру — иначе
+		# он будет стоять столбом по семь секунд на каждом полотне.
+		if w.vision_ui != null and w.vision_ui.visible:
+			ev["картинка"] = int(ev.get("картинка", 0)) + 1
+			w.vision_ui._close()
 			continue
 		# КАДР МОЛЬБЕРТА ПО ДОРОГЕ. Самый честный способ увидеть полотно так,
 		# как его видит игрок: подходя к нему своими ногами.
