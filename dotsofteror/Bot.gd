@@ -172,6 +172,17 @@ func check_sound() -> void:
 		say("все банки из настоящих записей, ни одной подмены")
 
 
+## СНИМОК — И СРАЗУ ЧИСЛА О НЁМ.
+##
+## Снимок нужен тому, кто МОЖЕТ смотреть картинки. Помощник без зрения (или я
+## сам в прогоне без окна) о кадре не узнает ничего, а половина дефектов этой
+## игры — именно про картинку: «пусто», «тварь за краем», «чёрный экран».
+## Поэтому рядом с PNG кладём его пересказ числами: насколько кадр тёмный,
+## сколько в нём светлого, где самое яркое пятно. Считаем по той же картинке,
+## что и сохраняем, с шагом в восемь пикселей — это доли миллисекунды.
+##
+## Как читать: светлость 0.004 и 99% тьмы — это чёрный экран, «не видно
+## ничего»; 0.05 и 70% — тёмный коридор, в котором игрок всё-таки видит пол.
 func shot(name: String) -> void:
 	# БЕЗ ОКНА КАДРА НЕТ. В headless сигнал frame_post_draw не приходит никогда,
 	# и ожидание его вешает весь прогон намертво: сцена обвала висела двадцать
@@ -182,8 +193,59 @@ func shot(name: String) -> void:
 	if vp == null or vp.get_texture() == null:
 		return
 	await RenderingServer.frame_post_draw
-	vp.get_texture().get_image().save_png("user://bot_%02d_%s.png" % [_shots, name])
+	var img: Image = vp.get_texture().get_image()
+	img.save_png("user://bot_%02d_%s.png" % [_shots, name])
 	_shots += 1
+	кадр_числами(img, name)
+
+
+## Пересказ кадра числами. Отдельной функцией — чтобы её можно было звать и на
+## чужой картинке, и из сцены, которой снимок не нужен.
+func кадр_числами(img: Image, name: String) -> void:
+	var sum: float = 0.0
+	var тьма: int = 0
+	var свет: int = 0
+	var n: int = 0
+	var ярче: float = 0.0
+	var где := Vector2.ZERO
+	for y in range(0, img.get_height(), 8):
+		for x in range(0, img.get_width(), 8):
+			var c: Color = img.get_pixel(x, y)
+			var l: float = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722
+			sum += l
+			if l < 0.06:
+				тьма += 1
+			elif l > 0.45:
+				свет += 1
+			if l > ярче:
+				ярче = l
+				где = Vector2(float(x) / float(img.get_width()),
+					float(y) / float(img.get_height()))
+			n += 1
+	if n == 0:
+		return
+	say("  [кадр %s] светлость %.3f, тьмы %d%%, светлого %d%%, ярчайшее %.2f в (%.2f, %.2f)"
+		% [name, sum / float(n), 100 * тьма / n, 100 * свет / n, ярче, где.x, где.y])
+
+
+## ВИДНО ЛИ ЭТУ ВЕЩЬ В КАДРЕ — числами, без картинки.
+##
+## Три вопроса, на которые раньше отвечал только мой глаз: попадает ли точка в
+## кадр, насколько она в стороне от середины и не закрыта ли камнем. Именно
+## так ловятся «монстр пропал из кадра» и «полотно за краем экрана».
+func в_кадре(цель: Vector3, имя: String) -> Dictionary:
+	var cam: Camera3D = w.player_node.camera
+	var экран: Vector2 = w.get_viewport().get_visible_rect().size
+	var сзади: bool = cam.is_position_behind(цель)
+	var точка: Vector2 = Vector2(-1, -1) if сзади else cam.unproject_position(цель)
+	var внутри: bool = not сзади and Rect2(Vector2.ZERO, экран).has_point(точка)
+	var к: Vector3 = (цель - cam.global_position).normalized()
+	var угол: float = rad_to_deg(acos(clampf(к.dot(-cam.global_transform.basis.z), -1.0, 1.0)))
+	var камень: bool = not w._clear_line(cam.global_position, цель)
+	var далеко: float = cam.global_position.distance_to(цель)
+	say("  [вижу %s] в кадре %s, мимо середины %.0f°, до неё %.1f м, камень между: %s"
+		% [имя, str(внутри), угол, далеко, str(камень)])
+	return {"в кадре": внутри, "угол": угол, "метров": далеко, "камень": камень}
 
 
 ## ─────────────────────────── ходьба ───────────────────────────
@@ -2871,6 +2933,55 @@ func run(want: Array) -> void:
 		await scene_blade()
 	if all or want.has("поимка"):
 		await scene_catch(want.has("гуманоид"))
+	if want.has("зрение"):
+		say("═══ КАДР ЧИСЛАМИ: ЧТО ВИДНО БЕЗ ГЛАЗ ═══")
+		stage_clean()
+		var p5 = w.player_node
+		var m5 = w.monster
+		# Неуязвимость и парковка: сцена показательная, тварь должна стоять там,
+		# куда её поставили, и не хватать бота.
+		p5.invuln = 9999.0
+		m5.visible = true
+		m5.mode = "chase"
+		m5.path.clear()
+		m5.parked = true
+		m5.prowl = false
+		if _line.is_empty():
+			_find_line()
+		var mid5: int = _line.size() / 2
+		# В КОРИДОРЕ, А НЕ В СТАРТОВОМ ТУПИКЕ. Первая версия ставила тварь «в
+		# трёх метрах перед игроком», а там камень: страховка «в камне стоять
+		# нельзя» выталкивала её на ближайший пол — ровно на игрока, и замер
+		# мерил камеру внутри туши.
+		p5.global_position = w.cell_to_world(_line[mid5], PlayerScript.STAND_Y)
+		m5.global_position = w.cell_to_world(_line[mid5 + 1])
+		p5.look_force(m5.look_point(), 5.0, 30.0)
+		await w.get_tree().create_timer(1.2).timeout
+		в_кадре(m5.look_point(), "тварь впереди")
+		await shot("зрение_впереди")
+		# 2. Та же тварь за спиной: разворачиваем игрока.
+		p5.look_force(p5.global_position
+			+ (p5.global_position - m5.global_position).normalized() * 10.0, 5.0, 30.0)
+		await w.get_tree().create_timer(1.2).timeout
+		в_кадре(m5.look_point(), "тварь за спиной")
+		# 3. И за камнем: ищем клетку пола, которую от игрока закрывает стена.
+		var спрятан: Vector2i = Vector2i(-1, -1)
+		for r5 in w.maze.size.y:
+			for c5 in w.maze.size.x:
+				if спрятан.x >= 0 or w.maze.is_wall(r5, c5):
+					continue
+				var точка: Vector3 = w.cell_to_world(Vector2i(r5, c5))
+				var д: float = точка.distance_to(p5.global_position)
+				if д > 4.0 and д < 26.0 and not w._clear_line(p5.camera.global_position, точка):
+					спрятан = Vector2i(r5, c5)
+		if спрятан.x >= 0:
+			m5.global_position = w.cell_to_world(спрятан)
+			p5.look_force(m5.look_point(), 5.0, 30.0)
+			await w.get_tree().create_timer(1.2).timeout
+			в_кадре(m5.look_point(), "тварь за стеной")
+			await shot("зрение_за_стеной")
+		else:
+			warn("не нашёл клетку за стеной — проверка неполная")
 	if want.has("звон"):
 		say("═══ ВЫБИТАЯ ПАЛОЧКА ЗВЕНИТ ═══")
 		stage_clean()
