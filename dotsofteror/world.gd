@@ -373,6 +373,9 @@ var end_walk: float = 0.0         ## метры подхода в финале �
 var fat_ending: bool = false      ## добивание — это КОНЦОВКА, а не смерть
 var fat_roared: bool = false      ## рык посреди удержания уже был
 var says_after: String = ""       ## реплика, которая ждёт, пока досмотрят картинку
+var back_done: Array[int] = []    ## на каких полотнах за спиной уже наследили
+var back_marks: Array = []        ## сами отпечатки: их видно до конца захода
+var stare_t: float = 0.0          ## сколько игрок смотрит на него в упор
 var outings: int = 0              ## сколько раз он уже показывался
 var out_gap: float = 99.0         ## сколько он уже сидит в камне между выходами
 var out_since: float = 0.0        ## сколько длится нынешний выход
@@ -460,6 +463,30 @@ const WAND_BEAD_R := 0.026
 const RAID_PART := 0.40
 const RAID_CELLS := 11
 const RAID_SPEED := 0.92
+## МИР МЕНЯЕТСЯ ЗА СПИНОЙ.
+##
+## Полотно — единственное место в игре, где игрок смотрит в одну точку по
+## минуте и не видит ничего вокруг. До сих пор это использовалось один раз — на
+## набег; а ведь за эту минуту с комнатой можно сделать что угодно, и игрок
+## обнаружит это, только когда закроет холст.
+##
+## Ничего не нападает и ничем не грозит: просто следы, которых не было, и стол,
+## сдвинутый с места. Страх тут не в событии, а в выводе, который игрок делает
+## сам: пока я рисовал, кто-то подошёл вплотную и стоял у меня за спиной.
+const BACK_AT := [2, 5]           ## после каких сданных полотен это бывает
+const BACK_STEPS := 7             ## столько отпечатков в цепочке
+## ЕГО НЕЛЬЗЯ РАССМОТРЕТЬ.
+##
+## Пока на тварь можно остановиться и посмотреть — её изучают, а изученное не
+## пугает: становится понятно, что это модель, а у модели есть края. Поэтому
+## смотреть на неё в упор можно, только когда она идёт за тобой; в остальное
+## время — стоит задержать на ней взгляд, и её там больше нет.
+##
+## Не «убегает»: именно перестаёт быть. Остаётся скрежет в стене и вопрос,
+## видел ли ты вообще что-нибудь.
+const STARE_T := 1.7              ## столько можно смотреть, прежде чем он исчезнет
+const STARE_COS := 0.94           ## насколько прямо надо смотреть (около 20°)
+const STARE_NEAR := 5.0           ## ближе этого не пропадает: это уже не разглядывание
 ## ТИШИНА КАК СОБЫТИЕ.
 ##
 ## Фон в игре шёл ВСЕГДА: эмбиент, музыка, скрежет, сердце, дыхание. К ровному
@@ -3279,6 +3306,7 @@ func _process(delta: float) -> void:
 	_update_raid(delta)
 	_update_hush(delta)
 	_update_fake(delta)
+	_update_stare(delta)
 	_update_form(delta)
 	_update_human_attack(delta)
 	_update_still(delta)
@@ -3771,6 +3799,83 @@ func _update_board3d(delta: float) -> void:
 	board_vp.push_input(mm, true)
 
 
+## СЛЕД ЗА СПИНОЙ. Цепочка мокрых отпечатков из ближайшего прохода к тому
+## месту, где стоит игрок, и последний — вплотную, у самых пяток. Делается в
+## тот миг, когда полотно закрывается: игрок разворачивается и находит их.
+func _steps_behind() -> void:
+	if player_node == null or maze == null:
+		return
+	var сюда: Vector3 = player_node.global_position
+	# Откуда пришли: берём сторону, где есть пол, и не ту, куда игрок смотрит.
+	var назад: Vector3 = player_node.global_transform.basis.z
+	назад.y = 0.0
+	if назад.length() < 0.01:
+		назад = Vector3.FORWARD
+	назад = назад.normalized()
+	# МОКРО, А НЕ ЧЁРНО. Первый заход клал плоские тёмные прямоугольники — на
+	# кадре это читалось дырами в полу, а не следами. Теперь это та же жижа,
+	# что течёт из проломов: тёмная, но слабо светящаяся и блестящая, — её в
+	# этом мире узнают с одного взгляда.
+	var mat := _flat_mat(Color(0.05, 0.08, 0.06))
+	mat.roughness = 0.12
+	mat.metallic = 0.45
+	mat.emission_enabled = true
+	mat.emission = Color(0.18, 0.62, 0.38)
+	mat.emission_energy_multiplier = 0.35
+	for i in BACK_STEPS:
+		var t: float = float(i) / float(BACK_STEPS - 1)
+		# Шаг в шаг, с разводом влево-вправо: это следы, а не колея.
+		var вбок: float = (0.22 if i % 2 == 0 else -0.22)
+		var сдвиг: Vector3 = назад * (0.55 + t * 2.6) \
+			+ Vector3(-назад.z, 0.0, назад.x) * вбок
+		var точка: Vector3 = сюда + сдвиг
+		var c := world_to_cell(точка)
+		if maze.is_wall(c.x, c.y):
+			break
+		# ФОРМА — КЛЯКСА, А НЕ ПРЯМОУГОЛЬНИК. Плоский шар, сплющенный в лепёшку
+		# и вытянутый по ходу: у следа должен быть край, а не угол.
+		var mi := MeshInstance3D.new()
+		var q := SphereMesh.new()
+		q.radius = 0.5
+		q.height = 1.0
+		q.radial_segments = 10
+		q.rings = 6
+		mi.mesh = q
+		mi.material_override = mat
+		mi.scale = Vector3(0.20, 0.035, 0.34) * _rng.randf_range(0.85, 1.15)
+		mi.rotation = Vector3(0.0, atan2(назад.x, назад.z), 0.0)
+		mi.position = Vector3(точка.x, 0.03, точка.z)
+		add_child(mi)
+		back_marks.append(mi)
+	# И ОТПЕЧАТОК ЛАДОНИ НА БЛИЖАЙШЕЙ СТЕНЕ, на высоте плеча. Следы говорят
+	# «подошёл», ладонь — «стоял и опирался, пока ты рисовал».
+	var пк := world_to_cell(сюда)
+	for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+		var n: Vector2i = пк + d
+		if not maze.is_wall(n.x, n.y):
+			continue
+		# Клетки: x — ряд (мировой z), y — столбец (мировой x).
+		var норм := Vector3(float(-d.y), 0.0, float(-d.x))
+		var лицо: Vector3 = cell_to_world(n, 0.0) + норм * (cell_size * 0.5 + 0.02)
+		var hm := MeshInstance3D.new()
+		var hq := SphereMesh.new()
+		hq.radius = 0.5
+		hq.height = 1.0
+		hq.radial_segments = 10
+		hq.rings = 6
+		hm.mesh = hq
+		hm.material_override = mat
+		hm.position = Vector3(лицо.x, 1.45, лицо.z)
+		hm.rotation = Vector3(0.0, atan2(норм.x, норм.z), 0.0)
+		# Сплющена ПО НОРМАЛИ стены: ладонь лежит на камне, а не торчит из него.
+		hm.scale = Vector3(0.26, 0.30, 0.035) if absf(норм.z) > 0.5 \
+			else Vector3(0.035, 0.30, 0.26)
+		add_child(hm)
+		back_marks.append(hm)
+		break
+	print("[журнал] %.0f с: за спиной наследили (полотен %d)" % [_clock, done])
+
+
 func _close_board() -> void:
 	# КТО ЗАКРЫЛ ПОЛОТНО. Три обработчика зовут это место, и каждый пишет своё
 	# («сдано», «сорвалось», «бросил сам»), но в логе играющего набег обрывался
@@ -3844,6 +3949,11 @@ func _on_solved() -> void:
 		hud.text = Lang.t("h_noexit")
 	# ЧТО БЫЛО ПОД ТОЧКАМИ. Полотно наконец что-то значит: за каждым спрятан
 	# кадр чужой истории, и семь кадров складываются в неё целиком.
+	# И СЛЕД ЗА СПИНОЙ. Пока игрок рисовал, кто-то подошёл к нему вплотную;
+	# узнает он об этом, только когда развернётся.
+	if BACK_AT.has(done - 1) and not back_done.has(done - 1):
+		back_done.append(done - 1)
+		_steps_behind()
 	if vision_ui != null and done >= 1 and done <= 7 and vision_ui.есть(done - 1):
 		_freeze_player(true)
 		vision_ui.show_one(done - 1)
@@ -6266,6 +6376,52 @@ func _update_calm(delta: float) -> void:
 		print("[журнал] %.0f с, полотен %d: затишье %s" % [_clock, done,
 			"началось" if hold else "кончилось (ждал %.0f с)" % calm_since])
 	monster.hold_out = hold
+
+
+## РАЗГЛЯДЫВАНИЕ. Считаем только то время, когда игрок именно СМОТРИТ: тварь
+## видна, стоит не вплотную, не гонится за ним и ничего сейчас не делает.
+func _update_stare(delta: float) -> void:
+	if monster == null or player_node == null or sfx == null:
+		return
+	if not started or dead or won or lab or ending != 0 or cine != 0:
+		stare_t = 0.0
+		return
+	# В погоне смотреть МОЖНО и нужно: там он и должен быть виден целиком.
+	# Пропадает он только из спокойных кадров, где его разглядывают.
+	var спокоен: bool = monster.mode == "roam" or monster.mode == "hunt" \
+		or monster.prowl
+	if not monster.visible or not спокоен or _attack_busy() or _busy():
+		stare_t = 0.0
+		return
+	var to: Vector3 = monster.global_position - player_node.global_position
+	to.y = 0.0
+	var d: float = to.length()
+	if d < STARE_NEAR or d > cell_size * 6.0:
+		stare_t = 0.0
+		return
+	var fwd: Vector3 = -player_node.global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length() < 0.01 or to.length() < 0.01:
+		stare_t = 0.0
+		return
+	if fwd.normalized().dot(to.normalized()) < STARE_COS:
+		stare_t = 0.0
+		return
+	# И сквозь камень не считается: смотреть надо НА НЕГО, а не в стену.
+	if not _clear_line(player_node.global_position, monster.global_position):
+		stare_t = 0.0
+		return
+	stare_t += delta
+	if stare_t < STARE_T:
+		return
+	stare_t = 0.0
+	# Пропадает молча: сначала выключаем видимость, потом уводим в камень, —
+	# иначе уход объявит себя сигналом «он отстал» со всей его обвязкой.
+	monster.visible = false
+	monster.retreat_to_wall(9.0, 18.0)
+	sfx.play_at("skitter", monster.global_position, -7.0, 0.75)
+	print("[журнал] %.0f с: смотрел на него %.1f с — пропал (было %.1f м)"
+		% [_clock, STARE_T, d])
 
 
 ## ТИШИНА. Накатывает сама, уходит сама; ни на что в игре не влияет, кроме

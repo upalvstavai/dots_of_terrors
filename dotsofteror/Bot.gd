@@ -2432,6 +2432,125 @@ func _wave_report(name: String, w2) -> void:
 		100.0 * rms / 32767.0, float(n) / sr])
 
 
+## ЕГО НЕЛЬЗЯ РАССМОТРЕТЬ. Ставим тварь в десяти метрах на прямой видимости,
+## поворачиваем к ней камеру и смотрим две секунды: она должна пропасть. И
+## обратная проверка: в ПОГОНЕ смотреть можно сколько угодно — там она обязана
+## остаться, иначе игра отнимает у игрока единственное, на что он реагирует.
+func scene_stare() -> void:
+	say("═══ ЕГО НЕЛЬЗЯ РАССМОТРЕТЬ ═══")
+	var m = w.monster
+	if m == null:
+		return
+	set_phase(2)
+	w.player_node.invuln = 9999.0
+	# Ищем прямой коридор: игрок с одного конца, тварь в десяти метрах.
+	var где := Vector2i(-1, -1)
+	var куда := Vector2i(-1, -1)
+	for r in range(3, w.maze.size.y - 3):
+		for c in range(3, w.maze.size.x - 3):
+			if w.maze.is_wall(r, c):
+				continue
+			for d in [Vector2i(1, 0), Vector2i(0, 1)]:
+				var n2: Vector2i = Vector2i(r, c) + d * 3
+				if w.maze.is_wall(n2.x, n2.y):
+					continue
+				if w.maze.is_wall(r + d.x, c + d.y) or w.maze.is_wall(r + d.x * 2, c + d.y * 2):
+					continue
+				где = Vector2i(r, c)
+				куда = n2
+				break
+			if где.x >= 0:
+				break
+		if где.x >= 0:
+			break
+	if где.x < 0:
+		warn("прямого коридора в три клетки не нашлось")
+		return
+	var p = w.player_node
+	p.global_position = w.cell_to_world(где, PlayerScript.STAND_Y)
+	var to: Vector3 = w.cell_to_world(куда, 0.0) - w.cell_to_world(где, 0.0)
+	p.yaw = atan2(-to.x, -to.z)
+	p.rotation.y = p.yaw
+	p.pitch = 0.0
+	if p.head != null:
+		p.head.rotation.x = 0.0
+	m.parked = false
+	m.prowl = false
+	m.mode = "roam"
+	m.visible = true
+	m.stun = 0.0
+	m.global_position = w.cell_to_world(куда, 0.0)
+	await w.get_tree().process_frame
+	var t: float = 0.0
+	while m.visible and t < 5.0:
+		await w.get_tree().process_frame
+		t += w.get_process_delta_time()
+		m.mode = "roam"
+	say("смотрел в упор: пропал через %.1f с (видно: %s)" % [t, str(m.visible)])
+	if m.visible:
+		warn("смотрели пять секунд, а он всё ещё стоит — приём не работает")
+	# ОБРАТНАЯ ПРОВЕРКА: в погоне он пропадать не должен.
+	m.global_position = w.cell_to_world(куда, 0.0)
+	m.visible = true
+	m.mode = "chase"
+	m.chase_t = 30.0
+	var t2: float = 0.0
+	while m.visible and t2 < 4.0:
+		await w.get_tree().process_frame
+		t2 += w.get_process_delta_time()
+		m.mode = "chase"
+		m.global_position = w.cell_to_world(куда, 0.0)
+	say("в погоне смотрел %.1f с, видно: %s" % [t2, str(m.visible)])
+	if not m.visible:
+		warn("в погоне он тоже пропал — так нельзя, это его единственный кадр")
+	m.retreat_to_wall(1.0, 1.0)
+
+
+## СЛЕД ЗА СПИНОЙ. Пока игрок рисует, кто-то подходит к нему вплотную; видно
+## это, только когда развернёшься. Проверяем, что следы вообще появляются, что
+## они ПОЗАДИ (а не перед носом) и что их видно на кадре.
+func scene_behind() -> void:
+	say("═══ СЛЕД ЗА СПИНОЙ ═══")
+	set_phase(2)
+	w.player_node.invuln = 9999.0
+	w.done = 2
+	if not await _stand_at_canvas():
+		return
+	await _draw_until(1.1, 30.0)
+	await w.get_tree().create_timer(1.0).timeout
+	if w.vision_ui != null and w.vision_ui.visible:
+		w.vision_ui.visible = false
+		w._on_vision_closed()
+		await w.get_tree().process_frame
+	say("следов появилось: %d" % w.back_marks.size())
+	if w.back_marks.is_empty():
+		warn("за спиной не наследили вовсе")
+		return
+	# ПОЗАДИ ЛИ. Считаем косинус со взглядом: всё, что ближе к −1, — за спиной.
+	var p = w.player_node
+	var fwd: Vector3 = -p.global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized()
+	var спереди: int = 0
+	for m in w.back_marks:
+		var to: Vector3 = m.global_position - p.global_position
+		to.y = 0.0
+		if to.length() > 0.2 and fwd.dot(to.normalized()) > 0.2:
+			спереди += 1
+	say("из них перед лицом: %d" % спереди)
+	if спереди > 1:
+		warn("следы легли ПЕРЕД игроком — весь смысл в том, что они сзади")
+	# И смотрим на них: разворот на 180°.
+	p.yaw += PI
+	p.rotation.y = p.yaw
+	p.pitch = deg_to_rad(-38.0)
+	if p.head != null:
+		p.head.rotation.x = p.pitch
+	for i in 12:
+		await w.get_tree().process_frame
+	await shot("след_за_спиной")
+
+
 ## ДОБИВАНИЕ. Играющий (21.09): «единственное, что видит игрок, — это низ
 ## монстра, а то, как его разрывают, не читается вообще». Снимаем всю сцену
 ## подряд, кадр за кадром: словами это не разобрать, только глазами.
@@ -3454,6 +3573,10 @@ func run(want: Array) -> void:
 	# скрыт», и лента там читается иначе. Играющий увидел её как поломку
 	# («цвета чёрные, пока не попал по точке») — значит ленту надо уметь
 	# снимать отдельно, а не выяснять это с его слов.
+	if want.has("взгляд"):
+		await scene_stare()
+	if want.has("заспиной"):
+		await scene_behind()
 	if want.has("добивание"):
 		await scene_fatality()
 	if want.has("собака"):
