@@ -253,7 +253,10 @@ func в_кадре(цель: Vector3, имя: String) -> Dictionary:
 ## ОБХОД ПРЕПЯТСТВИЙ. Прямолинейный бот застревал у мольберта: он упирался и
 ## продолжал давить вперёд. Живой человек в такой ситуации делает шаг вбок —
 ## это и повторяем: уперся на полсекунды, значит идём боком, потом снова вперёд.
-func goto_cell(goal: Vector2i, limit: float = 25.0) -> bool:
+## `тихо` — не ругаться, если не дошёл. Нужно для бегства в убежище: не добежал
+## — это не дефект игры, а обычное дело в погоне, и в списке «что выглядит не
+## так» ему не место.
+func goto_cell(goal: Vector2i, limit: float = 25.0, тихо: bool = false) -> bool:
 	var p = w.player_node
 	var path: Array = w._path(w.world_to_cell(p.global_position), goal)
 	var t: float = 0.0
@@ -351,6 +354,8 @@ func goto_cell(goal: Vector2i, limit: float = 25.0) -> bool:
 		if _stuck > 0.4:
 			warn("УПЁРСЯ по дороге к %s: стоял на месте в %s" % [goal, here])
 		else:
+			if тихо:
+				return false
 			warn("не успел до %s за %.0f с (шёл, но далеко), остановился в %s"
 				% [goal, limit, here])
 	return ok
@@ -4113,6 +4118,21 @@ func solve_board(limit: float = 40.0) -> bool:
 	return not b.visible
 
 
+## СБЕЖАТЬ И ПЕРЕЖДАТЬ. То же, что делает игрок, когда за ним бегут: уходит в
+## убежище и там пережидает. Без этого бот стоял у мольберта и ждал холста,
+## которого правила ему сейчас не дадут.
+func _flee_and_wait() -> void:
+	var safe: Vector2i = w.active_safe
+	if safe.x < 0 and not w.safe_cells.is_empty():
+		safe = w.safe_cells[0]
+	if safe.x >= 0:
+		await goto_cell(safe, 40.0, true)
+	var t: float = 0.0
+	while w._chased_now() and t < 20.0:
+		await w.get_tree().process_frame
+		t += w.get_process_delta_time()
+
+
 ## Клетка ТЕКУЩЕГО полотна — или (-1,-1), если все сданы. Отдельная функция,
 ## потому что done меняется в чужой корутине: сторож дорисовывает полотно ровно
 ## между двумя моими строчками, done становится семёркой, и любое обращение к
@@ -4178,6 +4198,12 @@ func scene_full(ph: int) -> void:
 		var goal: Vector2i = _canv_now()
 		var ok: bool = false
 		var attempt: int = 0
+		# ПО СТРОКЕ НА ЗАХОД К ПОЛОТНУ. Проход стал падать с семи полотен до
+		# двух-четырёх, и падал МОЛЧА: ни одного предупреждения, цикл просто
+		# кончался. Без этой строки причину не найти — она и не находилась
+		# три захода подряд.
+		say("  заход %d: сдано %d, цель %s, погоня %s" % [
+			k + 1, w.done, str(goal), str(w._chased_now())])
 		# Три попытки по минуте, а не четыре по две: мой лимит считает ФИЗИЧЕСКИЕ
 		# кадры, то есть реальные секунды, — и на фазе 2 один упрямый мольберт
 		# съедал восемь минут живого времени, за которые в отчёте не появлялось
@@ -4240,8 +4266,11 @@ func scene_full(ph: int) -> void:
 			warn("фаза %d: у полотна %d стоял, а оно не открылось (полотно в %s)"
 				% [ph, w.done, str(_canv_now())])
 			continue
+		var было_сдано: int = w.done
 		if await solve_board():
 			solved += 1
+		say("    полотно закрылось: было сдано %d, стало %d, видно %s" % [
+			было_сдано, w.done, str(w.board.visible)])
 		await w.get_tree().create_timer(0.4).timeout
 		check_now("после полотна %d" % solved)
 		# Отходим, иначе следующее полотно не взводится.
@@ -4864,21 +4893,54 @@ func scene_walk_all() -> void:
 	w.player_node.invuln = 0.0
 	watching = true
 	_watch()
-	for i in w.canv_cells.size():
-		# Клетку берём СВЕЖУЮ на каждом шаге: полотно может убежать, пока идём.
-		if _canv_now().x < 0:
+	# ПО ПОЛОТНУ ЗА КРУГ — НО КРУГОВ БОЛЬШЕ, ЧЕМ ПОЛОТЕН.
+	#
+	# Здесь стоял «for i in canv_cells.size()»: ровно семь заходов, по одному на
+	# полотно. Пока холст открывался сам, стоило подойти, этого хватало. Теперь
+	# под погоней он НЕ открывается (правило игры, а не заминка), и каждый такой
+	# заход сгорал впустую: проход падал с семи полотен до двух-четырёх, причём
+	# молча — ни одного предупреждения, цикл просто кончался.
+	#
+	# Теперь круг кончается только вместе с полотнами, а бот ведёт себя как
+	# игрок: гонятся — бежит в убежище и пережидает, а не стоит у мольберта.
+	# ВДВОЕ БЫСТРЕЕ РЕАЛЬНОГО ВРЕМЕНИ. Бот теперь пережидает погони, как игрок,
+	# и проход занимает одиннадцать минут живого времени — столько ждать ради
+	# одной проверки нельзя. Игра при этом идёт своим чередом, просто быстрее.
+	Engine.time_scale = 2.5
+	var guard: int = 0
+	while w.done < w.n_canv and guard < w.n_canv * 4:
+		guard += 1
+		var цель: Vector2i = _canv_now()
+		if цель.x < 0:
 			break
-		var ok: bool = await goto_cell(_canv_now(), 70.0)
+		say("  круг %d: сдано %d, цель %s, погоня %s" % [
+			guard, w.done, str(цель), str(w._chased_now())])
+		if w._chased_now():
+			ev["бежал в убежище"] = int(ev.get("бежал в убежище", 0)) + 1
+			await _flee_and_wait()
+			continue
+		var ok: bool = await goto_cell(цель, 70.0)
 		if not ok:
 			fails += 1
-		else:
-			check_now("путь к полотну %d" % i)
-		# Ждём, пока сторож дорисует открывшееся полотно, и отходим.
+			continue
+		check_now("путь к полотну %d" % guard)
+		# ЖДЁМ, ПОКА ОТКРОЕТСЯ. Открывает его близость, но не сразу: игра может
+		# держать холст закрытым, пока тварь рядом.
+		var t: float = 0.0
+		while not (w.board != null and w.board.visible) and t < 12.0 \
+				and _canv_now() == цель and not w._chased_now():
+			await w.get_tree().create_timer(0.2).timeout
+			t += 0.2
+		if w.board == null or not w.board.visible:
+			say("    не открылось за %.0f с (погоня %s)" % [t, str(w._chased_now())])
+			continue
+		# Открылось — дальше его дорисовывает сторож; ждём, пока закроется.
 		var wait: float = 0.0
 		while (w.board != null and w.board.visible) and wait < 45.0:
 			await w.get_tree().create_timer(0.2).timeout
 			wait += 0.2
 		await w.get_tree().create_timer(0.6).timeout
+	Engine.time_scale = 1.0
 	watching = false
 	var secs: float = (Time.get_ticks_msec() - t0) / 1000.0
 	say("прошёл: сдано %d полотен из %d за %.0f с, не дошёл до %d" % [
