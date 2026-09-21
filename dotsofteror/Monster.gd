@@ -2367,7 +2367,14 @@ func _tick_inwall(delta: float, player_pos: Vector3) -> void:
 			# ДОЛЯ ПОКАЗОВ ВЫРОСЛА. Встреч стало меньше (мир держит его в камне,
 			# пока не сдано полотно), и каждая должна стоить дороже: показ —
 			# лучшее, что у встречи есть, и именно он открывает рывок в лицо.
-			_begin_surface(player_pos, omniscient or _rng.randf() < 0.35)
+			# И НЕ ВЫХОДИМ ИЗДАЛЕКА К ТОМУ, КТО РИСУЕТ. Дальний выход — это
+			# ПОКАЗ камерой, а у рисующего камера занята холстом: мир такой
+			# показ пропускает (world._on_revealed), и вся сцена превращается
+			# в обычный рывок. За полный проход играющего показа не случилось
+			# ни разу именно поэтому — давление быстрее всего растёт как раз
+			# пока рисуешь, и почти каждый выход приходился на полотно.
+			_begin_surface(player_pos,
+				omniscient or draw_now or _rng.randf() < 0.35)
 		return
 	inwall_time += delta
 	if inwall_time > INWALL_CAP:
@@ -3132,7 +3139,17 @@ func _tick_out(delta: float, player_pos: Vector3, anger: int, in_finale: bool) -
 		var l := to.length()
 		# Останавливаемся на STANDOFF, а не на игроке.
 		if l > STANDOFF:
-			global_position += to / l * minf(step, l - STANDOFF)
+			# И НЕ ВСТАЁМ В КАМЕНЬ. Последний шаг идёт ПО ПРЯМОЙ на игрока, а
+			# прямая срезает углы: если игрок за поворотом, тварь заканчивала
+			# кадр внутри стены. Снаружи это выглядело безобидно — она сквозь
+			# камень и так ходит, — но обе атаки ФИГУРЫ отказываются бить из
+			# камня, и отказ был молчаливым: она стояла в двух метрах и не
+			# нападала, пока не сменит форму. Ровно это играющий и описал
+			# трижды. Шаг, уводящий в породу, теперь не делается вовсе.
+			var nxt: Vector3 = global_position + to / l * minf(step, l - STANDOFF)
+			var nc := _to_cell(nxt)
+			if not maze.is_wall(nc.x, nc.y):
+				global_position = nxt
 
 	if not hidden and _flat_dist(player_pos) < CATCH_DIST:
 		caught.emit()

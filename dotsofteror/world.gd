@@ -389,6 +389,10 @@ var raid_ph: float = 0.0          ## фаза мигания палочки
 var raid_n: int = -1              ## номер последней вспышки: по нему щёлкает звук
 var raid_flee: bool = false       ## сорванное полотно должно уйти на другое место
 var no_canv_said: bool = false    ## уже сказали, что рисовать во время погони нельзя
+var _raid_why_t: float = 0.0      ## откат печати «почему нет набега»
+var _raid_why_last: String = ""
+var _why_t: float = 0.0           ## откат печати «почему не берёт»
+var _why_last: String = ""        ## и прошлая причина: повторы не печатаем
 ## ТОЛЬКО ДЛЯ СТЕНДА: снять запрет на полотно во время погони. Нужен затем, что
 ## запрет меняет ВЕСЬ ход прохода, и без выключателя нельзя отличить «правило
 ## мешает пройти игру» от «бот не умеет по нему играть».
@@ -3450,6 +3454,7 @@ func _open_board() -> void:
 		canv_seed[done] if done < canv_seed.size() else _rng.randi())
 	next_fear_mul = 1.0
 	board.visible = true
+	_raid_why_last = ""
 	_board_to_easel()
 	if sfx != null:
 		sfx.hum_start()
@@ -3761,6 +3766,12 @@ func _on_vision_closed() -> void:
 
 
 func _on_failed() -> void:
+	# КТО И КОГДА ЗАКРЫЛ ПОЛОТНО. Без этой строки «набег оборван — полотно
+	# закрыли» не отличить от «игрок сам ушёл»: в логе прохода стенда набег
+	# кончался в ту же секунду, в которую начинался, и причина была не видна.
+	print("[журнал] %.0f с, полотно %d: сорвалось (%s), нарисовано %d из %d"
+		% [_clock, done + 1, "тварь" if board_torn else "время",
+		board.next_idx, board.n])
 	if says != null and done < canv_fails.size() and int(canv_fails[done]) >= 1:
 		says.try_say("v_shake")
 	fear = minf(fear + Shapes.FEAR_STEP, Shapes.FEAR_MAX)
@@ -3863,6 +3874,8 @@ func _flee_canvas() -> void:
 ## Бросил сам — потери нет, кроме начатого рисунка. Это законная тактика, а не
 ## трусость: за неё не наказывают, иначе выбор перестаёт быть выбором.
 func _on_abandoned() -> void:
+	print("[журнал] %.0f с, полотно %d: бросил сам, нарисовано %d из %d"
+		% [_clock, done + 1, board.next_idx, board.n])
 	# И ВЗВОД СНИМАЕМ. Без этой строки полотно открывалось заново в тот же
 	# кадр: игрок стоит вплотную, взвод остался поднятым, и E читалось как
 	# «начать заново». Бросить холст было физически нельзя — только досдать.
@@ -5729,12 +5742,16 @@ func _update_mon_lamp() -> void:
 
 ## АТАКА ФИГУРЫ: РУКИ С ПОТОЛКА. Убежать нельзя — в этом весь смысл: руки
 ## приходят не от него, а сверху, там, где ты стоишь. Он в это время бежит.
-func _start_human_attack() -> void:
+## Возвращает true, если приём НАЧАЛСЯ. Раньше она не возвращала ничего, и
+## отказ («он в камне» или «занят») был неотличим от удачи: вызвавший её
+## _on_caught всё равно уходил в return, а фигура оставалась стоять вплотную
+## и не делать ничего — ровно это играющий описывал трижды.
+func _start_human_attack() -> bool:
 	if _attack_busy():
-		return
+		return false
 	var mc0: Vector2i = world_to_cell(monster.global_position)
 	if maze.is_wall(mc0.x, mc0.y):
-		return
+		return false
 	hf_cool = HF_COOL
 	hf_stage = 1
 	hf_t = HF_HANG
@@ -5756,6 +5773,7 @@ func _start_human_attack() -> void:
 		sfx.play("scream", 4.0)
 	hf_step = 0.0
 	hud.text = Lang.t("h_hands")
+	return true
 
 
 func _update_human_attack(delta: float) -> void:
@@ -5812,13 +5830,13 @@ func _update_human_attack(delta: float) -> void:
 
 ## АТАКА ФИГУРЫ: ЯЗЫК ИЗ ПАСТИ. Выстрел и рывок к себе — коротко и без окна на
 ## подумать, в отличие от рук с потолка.
-func _human_tongue() -> void:
+func _human_tongue() -> bool:
 	# ИЗ КАМНЯ НЕ АТАКУЕТ. Он умеет ходить сквозь стены, и если запустить рывок
 	# оттуда, игрока тянет В СТЕНУ. Стенд поймал это четыре раза подряд:
 	# «игрок ВНУТРИ камня» с координатами всё дальше и дальше.
 	var mc: Vector2i = world_to_cell(monster.global_position)
 	if maze.is_wall(mc.x, mc.y) or _attack_busy():
-		return
+		return false
 	hf_cool = HF_COOL * 0.45
 	monster.strike_at(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0), 3.0)
 	reel_to = monster.global_position
@@ -5832,6 +5850,7 @@ func _human_tongue() -> void:
 		sfx.play_at("whip", monster.global_position, 6.0)
 		sfx.play("scream", 3.0)
 	hud.text = Lang.t("h_tongue")
+	return true
 
 
 ## НАБЕГ НА РИСУЮЩЕГО. Пятое и седьмое полотно — единственные два раза за игру,
@@ -5878,7 +5897,16 @@ func _update_raid(delta: float) -> void:
 	# И ПРОВЕРЯЕМ НЕ _busy(). Он считает занятым всякого, у кого открыто окно, а
 	# у рисующего окно открыто ВСЕГДА — это и есть полотно. С _busy() набег не
 	# начался бы ни разу; поймано первым же прогоном стенда.
-	if phase < 2 or _attack_busy() or cine != 0 or paused():
+	# ДАЛЬШЕ КАЖДЫЙ ОТКАЗ НАЗЫВАЕТ СЕБЯ. Набег бывает дважды за игру, и его
+	# отсутствие неотличимо от «не повезло»: играющий прошёл игру целиком и не
+	# увидел его ни разу, а журнал об этом молчал.
+	if phase < 2:
+		_raid_why("фаза %d" % phase)
+		return
+	if _attack_busy():
+		_raid_why("идёт другая атака")
+		return
+	if cine != 0 or paused():
 		return
 	if note_ui.visible or scare_ui.visible \
 			or (vision_ui != null and vision_ui.visible):
@@ -5896,13 +5924,26 @@ func _update_raid(delta: float) -> void:
 		monster.global_position.x - player_node.global_position.x,
 		monster.global_position.z - player_node.global_position.z).length()
 	if monster.mode == "chase" and near_now < cell_size * 6.0:
+		_raid_why("он гонится в %.0f м" % near_now)
 		return
 	# И НЕ С ПЕРВОЙ ТОЧКИ. «Уже почти закончил» — это середина рисунка: раньше
 	# игрок ещё не вложился в него и бросит без сожаления, позже он дорисует
 	# быстрее, чем тот дойдёт.
 	if board.n <= 0 or float(board.next_idx) / float(board.n) < RAID_PART:
+		_raid_why("рисунок пройден меньше чем на %d%%" % int(RAID_PART * 100.0))
 		return
 	_raid_start()
+
+
+## Причина, по которой набег не начался. Раз в три секунды и только когда
+## причина сменилась: иначе строка пойдёт каждый кадр.
+func _raid_why(why: String) -> void:
+	# Одна строка на причину и на открытие полотна: причины тут меняются редко,
+	# а лог играющего должен оставаться читаемым человеком.
+	if why == _raid_why_last:
+		return
+	_raid_why_last = why
+	print("[журнал] %.0f с, полотно %d: набега нет — %s" % [_clock, done + 1, why])
 
 
 func _raid_start() -> void:
@@ -6800,6 +6841,10 @@ func _on_revealed() -> void:
 	# Поверх открытого полотна, хвата или записки камеру уводить нельзя: там
 	# свой кадр. Тогда просто пропускаем показ и сразу пускаем рывок.
 	if _busy() or _attack_busy() or dead or won or ending != 0:
+		# И ГОВОРИМ, ЧТО ПОКАЗ ПРОПАЛ. Молчащий пропуск не отличить от «показа
+		# не было»: играющий прошёл игру целиком и не увидел ни одного, а
+		# журнал об этом не сказал ни слова.
+		print("[журнал] %.0f с: показ пропущен (полотно/записка/атака)" % _clock)
 		monster.start_rush(0.0)
 		return
 	var cam: Camera3D = player_node.camera
@@ -7260,6 +7305,8 @@ func _mon_journal(delta: float) -> void:
 	if phase != _jr_phase:
 		_jr_phase = phase
 		print("[журнал] %.0f с, полотен %d: фаза %d" % [_clock, done, phase])
+	_why_t = maxf(0.0, _why_t - delta)
+	_raid_why_t = maxf(0.0, _raid_why_t - delta)
 	_jr_t -= delta
 	if _jr_t > 0.0:
 		return
@@ -7270,10 +7317,19 @@ func _mon_journal(delta: float) -> void:
 		monster.global_position.z - player_node.global_position.z).length()
 	if d > 6.0 or (grab_ui != null and grab_ui.visible) or hurl_t > 0.0 or lift_on:
 		return
-	print("[тварь] %.0f с  до игрока %.1f м  режим %s  форма %d  prowl %s parked %s  stun %.1f  cool %.1f  invuln %.1f  reel %.2f  hf %d/%.1f  roar %.1f  убежище %s  полотно %s  путь %d" % [
-		Time.get_ticks_msec() / 1000.0, d, monster.mode, monster.form_kind,
+	# ВРЕМЯ — ТО ЖЕ, ЧТО У ВСЕГО ЖУРНАЛА. Здесь стояли секунды от запуска
+	# приложения, а во всех остальных строках — игровые: в логе прохода
+	# играющего одно и то же мгновение было записано и как 392-я секунда, и как
+	# 444-я, и сопоставить строки было нельзя.
+	#
+	# И ТРИ ВЕЛИЧИНЫ, КОТОРЫХ НЕ ХВАТИЛО. По логу было видно, что он стоит в
+	# двух метрах и не бьёт, а всё, что могло бы его держать, — ноль. Держало
+	# то, чего в строке не было: подъём над полом, бросок и «замри».
+	print("[тварь] %.0f с  до игрока %.1f м  режим %s  форма %d  prowl %s parked %s  stun %.1f  cool %.1f  invuln %.1f  reel %.2f  hf %d/%.1f  roar %.1f  подъём %s  бросок %.1f  замри %.1f  удар %d  убежище %s  полотно %s  путь %d" % [
+		_clock, d, monster.mode, monster.form_kind,
 		str(monster.prowl), str(monster.parked), monster.stun, grab_cool,
 		player_node.invuln, reel_t, hf_stage, hf_cool, monster.roar_t,
+		str(lift_on), hurl_t, still_t, slam_stage,
 		str(monster.safe_cells.has(world_to_cell(player_node.global_position))),
 		str(board.visible), monster.path.size()])
 
@@ -7712,6 +7768,19 @@ func _roll_scare(src: String) -> bool:
 	return ok
 
 
+## ПОЧЕМУ ХВАТА НЕ БЫЛО. Сигнал приходит КАЖДЫЙ КАДР, пока игрок в
+## досягаемости, и отказов тут восемь штук. Пока они молчали, «он стоит рядом и
+## не нападает» было не отличить от «так и задумано»: играющий описал это
+## трижды, а я трижды чинил не то. Теперь отказ говорит своё имя — не чаще раза
+## в секунду и только когда причина сменилась, иначе лог зальёт.
+func _why_no_grab(why: String) -> void:
+	if _why_t > 0.0 and why == _why_last:
+		return
+	_why_t = 1.0
+	_why_last = why
+	print("[тварь] %.0f с: дотянулся, но не берёт — %s" % [_clock, why])
+
+
 func _on_caught() -> void:
 	if won or dead or player_node == null:
 		return
@@ -7719,6 +7788,7 @@ func _on_caught() -> void:
 	# строки таймер подтягивания взводился заново на каждом кадре и никогда не
 	# доходил до нуля: тебя тянуло вечно, а хват так и не начинался.
 	if reel_t > 0.0:
+		_why_no_grab("тянет к себе")
 		return
 	# УЖЕ ДЕРЖИТ — НОВОГО НЕ НАЧИНАЕТ. Сигнал идёт каждый кадр, пока игрок в
 	# досягаемости, а во время броска и хвата он в досягаемости почти всегда.
@@ -7727,12 +7797,16 @@ func _on_caught() -> void:
 	# восьми местах из восьми. Играющий видел это как «отшвырнуло куда-то».
 	if hurl_t > 0.0 or lift_on or (grab_ui != null and grab_ui.visible
 			and grab_src == "monster"):
+		_why_no_grab("бросок %.1f, подъём %s, хват %s"
+			% [hurl_t, str(lift_on), str(grab_ui != null and grab_ui.visible)])
 		return
 	if player_node.invuln > 0.0:
+		_why_no_grab("неуязвимость %.1f" % player_node.invuln)
 		return
 	# ОСТЫВАНИЕ ПОСЛЕ ПРОШЛОГО ХВАТА. Он рядом, он гонится, он даже дотянулся —
 	# но не берёт. Отсюда и берётся промежуток между встречами.
 	if grab_cool > 0.0:
+		_why_no_grab("откат хвата %.1f" % grab_cool)
 		return
 	# ПОДТЯГИВАНИЕ. Щупальце уже на тебе — дальше тебя ТЯНУТ к нему, и только
 	# потом начинается борьба. Без этого «дотянулся с трёх метров» читалось бы
@@ -7758,15 +7832,20 @@ func _on_caught() -> void:
 		_grab_now(Lang.t("g_mash"), "monster")
 		return
 	if board.visible or note_ui.visible or scare_ui.visible:
+		_why_no_grab("открыто окно")
 		return
-	# ФИГУРА ДЕРЖИТСЯ — у неё свои приёмы.
+	# ФИГУРА ДЕРЖИТСЯ — у неё свои приёмы. Но только если приём СОСТОЯЛСЯ: оба
+	# отказываются бить из камня, а отказ был молчаливым — фигура замирала в
+	# двух метрах и не делала ничего, пока не кончится форма. Не вышло — берёт
+	# как обычно, щупальцем и хватом.
 	if monster.form_kind == monster.FORM_HUMAN and monster.form_t > 0.6 \
 			and hf_stage == 0 and hf_cool <= 0.0:
 		if _rng.randf() < 0.5:
-			_start_human_attack()
-		else:
-			_human_tongue()
-		return
+			if _start_human_attack():
+				return
+		elif _human_tongue():
+			return
+		_why_no_grab("приём фигуры не вышел — берёт как обычно")
 	# УДАРА О СТЕНУ ЗДЕСЬ БОЛЬШЕ НЕТ. Он был приёмом погони: тварь бежала за
 	# тобой и вдруг посреди бега разыгрывала целую сцену со швырком. Теперь это
 	# ЗАСАДА (см. _update_trap): он ждёт в камне, и стена бьёт, когда идёшь мимо.
