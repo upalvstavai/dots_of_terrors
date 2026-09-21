@@ -3154,6 +3154,11 @@ func _update_box(delta: float) -> void:
 	sfx.box_pitch(BOX_LOW * (1.0 + wob * sin(_clock * 0.61)
 		+ wob * 0.45 * sin(_clock * 2.3 + 1.7)))
 	var lvl: float = BOX_OUT if (out and near) else BOX_BASE
+	# И ШКАТУЛКА ЗАМОЛКАЕТ В ТИШИНЕ. Она играет своим каналом, мимо эмбиента,
+	# который приглушает amb_duck, — поэтому «тишина» звучала как тишина со
+	# шкатулкой. Играющий это и услышал: «тишины нет, всё ещё играет шкатулка».
+	if hush_t > 0.0:
+		lvl = 0.0
 	sfx.box_level(0.0 if (dead or won or not started) else lvl)
 	if dead or won:
 		return
@@ -3319,6 +3324,12 @@ func _process(delta: float) -> void:
 	if monster != null and grab_ui != null and grab_ui.visible and grab_src == "monster":
 		monster._aim_reach(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0))
 	if monster != null and player_node != null and not won and not lab:
+		# ПОКА ОНА В КАМНЕ ПОСРЕДИ ПОГОНИ — СКРЕЖЕТ ИЗ СЛУЧАЙНЫХ СТЕН. Это тот
+		# же звук, что после хвата (_update_lurk): он говорит «охота идёт» и не
+		# говорит, откуда. Без него погоня в камне становится тишиной, в
+		# которой игрок решит, что всё кончилось.
+		if monster.mode == "inwall" and monster.dive_kind > 0 and not dead:
+			lurk_t = maxf(lurk_t, 0.4)
 		# СТРАХОВКА ОТ «СОБАКИ». Пока открыто полотно, тварь ходит кругами
 		# вокруг рисующего (park + prowl) и ни догнать, ни схватить не может —
 		# так и задумано. Снимает это _close_board, но полотно гасили руками
@@ -6418,7 +6429,11 @@ func _update_stare(delta: float) -> void:
 	# Пропадает молча: сначала выключаем видимость, потом уводим в камень, —
 	# иначе уход объявит себя сигналом «он отстал» со всей его обвязкой.
 	monster.visible = false
-	monster.retreat_to_wall(9.0, 18.0)
+	# И ВОЗВРАЩАЕТСЯ ОН БЫСТРО. Иначе взгляд становится приёмом: посмотрел —
+	# он пропал — можно спокойно бежать. Играющий это сразу и заметил. Пропажа
+	# не должна приносить облегчения: его просто больше не видно, а срок до
+	# следующего появления короче обычного.
+	monster.retreat_to_wall(4.0, 9.0)
 	sfx.play_at("skitter", monster.global_position, -7.0, 0.75)
 	print("[журнал] %.0f с: смотрел на него %.1f с — пропал (было %.1f м)"
 		% [_clock, STARE_T, d])
@@ -6432,6 +6447,14 @@ func _update_hush(delta: float) -> void:
 		hush_t = 0.0
 		return
 	if hush_t > 0.0:
+		# ПОГОНЯ ОБРЫВАЕТ ТИШИНУ. Начаться посреди погони она не могла и
+		# раньше, но могла в неё ПЕРЕЙТИ: игрок оставался без музыки и бита
+		# ровно тогда, когда они значат «он бежит за тобой». Играющий сказал
+		# прямо: тишины во время погони быть не должно.
+		if _chased_now():
+			hush_t = 0.0
+			hush_next = maxf(hush_next, 25.0)
+			return
 		hush_t -= delta
 		# Эмбиент держим прижатым всё это время: amb_duck берёт максимум из
 		# своего и нового, поэтому доливаем понемногу каждый кадр.

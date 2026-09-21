@@ -2432,6 +2432,102 @@ func _wave_report(name: String, w2) -> void:
 		100.0 * rms / 32767.0, float(n) / sr])
 
 
+## ПОГОНЯ В КАМНЕ. Замысел: он почти всё время в стенах, оттуда идёт скрежет из
+## случайных сторон, а наружу он выходит на удар. Меряем ровно это: долю
+## времени на виду, сколько раз вылез, сколько из них вплотную, и звучит ли
+## что-нибудь, пока его не видно, — иначе погоня превратится в тишину, в
+## которой игрок решит, что всё кончилось.
+func scene_in_stone() -> void:
+	say("═══ ПОГОНЯ В КАМНЕ ═══")
+	var m = w.monster
+	var p = w.player_node
+	if m == null:
+		return
+	set_phase(2)
+	p.invuln = 9999.0
+	m.drop_hold()
+	m.form_hold = 0.0
+	m.form_t = 0.0
+	m.form_kind = m.FORM_NONE
+	m.hunt_until_safe = false
+	m.dive_t = 0.5
+	# И ИГРОК БЕЖИТ. Первый заход мерил стоящего на месте: тварь подходила на
+	# свою дистанцию и замирала — ноль нырков за полминуты. В погоне никто не
+	# стоит, и мерить надо погоню, а не стояние.
+	_run_away = true
+	_run_away_loop()
+	m.global_position = p.global_position + Vector3(0.0, 0.0, w.cell_size * 3.0)
+	m.visible = true
+	m.mode = "chase"
+	m.chase_t = 40.0
+	m._grow_out()
+	w.sfx.watch = true
+	var было_слышно: int = w.sfx.heard.size()
+	var t: float = 0.0
+	var видно: float = 0.0
+	var выходов: int = 0
+	var вплотную: int = 0
+	var звуков_в_камне: int = 0
+	var seen: int = w.sfx.heard.size()
+	var был_виден: bool = true
+	while t < 30.0:
+		await w.get_tree().physics_frame
+		var dt: float = 1.0 / 60.0
+		t += dt
+		m.chase_t = maxf(m.chase_t, 5.0)
+		var v: bool = m.visible and m.mode != "inwall"
+		if v:
+			видно += dt
+			if not был_виден:
+				выходов += 1
+				if m._flat_dist(p.global_position) < m.CATCH_DIST * 1.3:
+					вплотную += 1
+		else:
+			while seen < w.sfx.heard.size():
+				var h = w.sfx.heard[seen]
+				seen += 1
+				if str(h["имя"]) in ["scrape", "skitter", "hit_low"]:
+					звуков_в_камне += 1
+		был_виден = v
+		# Раз в секунду — что с ним сейчас: по этой ленте и видно ритм.
+		if int(t * 10.0) % 10 == 0 and absf(t - float(int(t))) < 0.02:
+			say("    %2.0f с: режим %s, видно %s, до игрока %.1f м" % [
+				t, m.mode, str(m.visible), m._flat_dist(p.global_position)])
+	w.sfx.watch = false
+	say("за %.0f с погони: на виду %.0f%%, выходов %d (из них вплотную %d), звуков из стен %d" % [
+		t, видно / t * 100.0, выходов, вплотную, звуков_в_камне])
+	if видно / t > 0.55:
+		warn("на виду больше половины погони — замысел был обратный")
+	if выходов < 2:
+		warn("за полминуты вылез %d раз — этого мало, погоня станет пустой" % выходов)
+	if звуков_в_камне < 10:
+		warn("пока он в камне, почти ничего не слышно (%d звуков) — это тишина, а не охота" % звуков_в_камне)
+	_run_away = false
+	m.retreat_to_wall(1.0, 1.0)
+
+
+## Бегство по коридорам, пока идёт замер: просто уходим в дальние тупики.
+var _run_away: bool = false
+
+func _run_away_loop() -> void:
+	var ends: Array = w.maze.dead_ends()
+	while _run_away and not ends.is_empty():
+		# УХОДИМ ОТ НЕЁ, А НЕ КУДА ПОПАЛО. Первый заход брал случайный тупик, и
+		# бот раз за разом пробегал СКВОЗЬ тварь: замер показывал, что она
+		# висит в полутора метрах всю погоню, хотя ближе своей дистанции она не
+		# подходит. Мерили не погоню, а то, как бот бегает через монстра.
+		var лучший = ends[0]
+		var bd: float = -1.0
+		for c in ends:
+			var d: float = w.cell_to_world(c, 0.0).distance_to(
+				w.monster.global_position)
+			if d > bd:
+				bd = d
+				лучший = c
+		await goto_cell(лучший, 12.0, true)
+		await w.get_tree().process_frame
+
+
 ## ЕГО НЕЛЬЗЯ РАССМОТРЕТЬ. Ставим тварь в десяти метрах на прямой видимости,
 ## поворачиваем к ней камеру и смотрим две секунды: она должна пропасть. И
 ## обратная проверка: в ПОГОНЕ смотреть можно сколько угодно — там она обязана
@@ -3573,6 +3669,8 @@ func run(want: Array) -> void:
 	# скрыт», и лента там читается иначе. Играющий увидел её как поломку
 	# («цвета чёрные, пока не попал по точке») — значит ленту надо уметь
 	# снимать отдельно, а не выяснять это с его слов.
+	if want.has("вкамне"):
+		await scene_in_stone()
 	if want.has("взгляд"):
 		await scene_stare()
 	if want.has("заспиной"):
