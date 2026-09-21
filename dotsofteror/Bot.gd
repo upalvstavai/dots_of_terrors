@@ -2427,6 +2427,42 @@ func _wave_report(name: String, w2) -> void:
 		100.0 * rms / 32767.0, float(n) / sr])
 
 
+## ДОБИВАНИЕ. Играющий (21.09): «единственное, что видит игрок, — это низ
+## монстра, а то, как его разрывают, не читается вообще». Снимаем всю сцену
+## подряд, кадр за кадром: словами это не разобрать, только глазами.
+func scene_fatality() -> void:
+	say("═══ ДОБИВАНИЕ ═══")
+	var m = w.monster
+	if m == null:
+		return
+	set_phase(3)
+	# В коридоре, а не в стартовом закутке: там стол и стены под носом.
+	var где := Vector2i(-1, -1)
+	for r in range(4, w.maze.size.y - 4):
+		for c in range(4, w.maze.size.x - 4):
+			if not w.maze.is_wall(r, c) and not w.safe_cells.has(Vector2i(r, c)):
+				где = Vector2i(r, c)
+				break
+		if где.x >= 0:
+			break
+	w.player_node.global_position = w.cell_to_world(где, PlayerScript.STAND_Y)
+	w.player_node.invuln = 9999.0
+	await w.get_tree().process_frame
+	w._start_fatality()
+	var t: float = 0.0
+	var i: int = 0
+	while w.fat_stage != 0 and t < 12.0:
+		await w.get_tree().process_frame
+		t += w.get_process_delta_time()
+		if t >= float(i) * 0.5:
+			say("  этап %d, %.1f с: игрок на %.2f м, тварь на %.2f м" % [
+				w.fat_stage, t, w.player_node.global_position.y,
+				m.global_position.y])
+			await shot("добивание_%02d" % i)
+			i += 1
+	say("добивание длилось %.1f с, кадров %d" % [t, i])
+
+
 ## «СОБАКА»: ФИГУРА В КАМНЕ. Состояние из лога играющего — тварь в форме фигуры
 ## стоит в 2.8 м, все счётчики нулевые, и четырнадцать секунд ничего не
 ## происходит. Причина: оба приёма фигуры отказываются бить из камня, а вызов
@@ -3413,6 +3449,8 @@ func run(want: Array) -> void:
 	# скрыт», и лента там читается иначе. Играющий увидел её как поломку
 	# («цвета чёрные, пока не попал по точке») — значит ленту надо уметь
 	# снимать отдельно, а не выяснять это с его слов.
+	if want.has("добивание"):
+		await scene_fatality()
 	if want.has("собака"):
 		await scene_dog()
 	if want.has("тишина"):

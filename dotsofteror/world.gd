@@ -371,6 +371,8 @@ var ending: int = 0               ## концовка: 0 нет, 1 подход�
 var end_t: float = 0.0            ## сколько идёт подход
 var end_walk: float = 0.0         ## метры подхода в финале — для шагов
 var fat_ending: bool = false      ## добивание — это КОНЦОВКА, а не смерть
+var fat_roared: bool = false      ## рык посреди удержания уже был
+var says_after: String = ""       ## реплика, которая ждёт, пока досмотрят картинку
 var outings: int = 0              ## сколько раз он уже показывался
 var out_gap: float = 99.0         ## сколько он уже сидит в камне между выходами
 var out_since: float = 0.0        ## сколько длится нынешний выход
@@ -1912,6 +1914,12 @@ func _wand_prop(glow: bool) -> MeshInstance3D:
 		# должен увидеть ПАЛОЧКУ. Возвращаемся почти к прежней яркости — она
 		# проверена тем, что её находили, — но теперь светится правильная форма.
 		mat.emission_energy_multiplier = 0.38
+		# И СВЕТИТСЯ ПО ДЕРЕВУ, А НЕ РОВНОЙ ЗАЛИВКОЙ. Свечение шло плоским
+		# цветом поверх текстуры и съедало её: играющий (21.09) сказал, что у
+		# лежащей палочки «нет текстуры той палочки, что в руке». Форма-то
+		# совпала, а рисунок коры перекрывала засветка. Берём ту же текстуру в
+		# свечение — тогда светятся волокна, а не цилиндр.
+		mat.emission_texture = mat.albedo_texture
 	mi.material_override = mat
 	var bead := MeshInstance3D.new()
 	var bm := SphereMesh.new()
@@ -2859,8 +2867,9 @@ func _start_fatality() -> void:
 		return
 	_freeze_player(true)
 	fat_stage = 1
-	fat_t = 0.55
+	fat_t = 0.8
 	fat_roll = 1.0 if _srng.randf() < 0.5 else -1.0
+	fat_roared = false
 	fat_from = player_node.global_position
 	# ОН ПОД ТОБОЙ. Куда бы ни утащило, добивает ком, и он должен быть внизу:
 	# иначе игрока поднимает в пустоту.
@@ -2871,7 +2880,45 @@ func _start_fatality() -> void:
 	monster.stun = 0.0
 	monster.visible = true
 	monster._grow_out()
-	fat_to = monster.global_position + Vector3(0.0, 3.35, 0.0)
+	# ЕГО ДОЛЖНО БЫТЬ ВИДНО. Держал он точно НАД СОБОЙ, в 3.35 м: камера
+	# оказывалась внутри его силуэта, и весь кадр занимала зелёная каша.
+	# Играющий (21.09): «единственное, что видит игрок, — это низ монстра, а то,
+	# как его разрывают, не читается вообще». Отводим в сторону на три метра:
+	# тогда в кадре он целиком — туша, поднятые руки и то, что они делают.
+	# КУДА ОТВЕСТИ. Коридор шириной в одну клетку, и вбок отойти обычно некуда:
+	# именно поэтому раньше игрока поднимали ровно над ним — а там камера
+	# оказывалась внутри туши. Отходим ВДОЛЬ КОРИДОРА, туда, где есть место:
+	# перебираем четыре стороны и берём ту, где свободна и соседняя клетка, и
+	# следующая за ней. Предпочитаем ту сторону, с которой игрок пришёл.
+	var откуда: Vector3 = fat_from - monster.global_position
+	откуда.y = 0.0
+	var мк := world_to_cell(monster.global_position)
+	var лучшая: Vector3 = Vector3.ZERO
+	var лучший: float = -1e9
+	for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+		if maze.is_wall(мк.x + d.x, мк.y + d.y):
+			continue
+		# Клетки лабиринта: x — ряд (мировой z), y — столбец (мировой x).
+		var dir := Vector3(float(d.y), 0.0, float(d.x))
+		var оценка: float = 1.0
+		if not maze.is_wall(мк.x + d.x * 2, мк.y + d.y * 2):
+			оценка += 1.0
+		if откуда.length() > 0.2:
+			оценка += откуда.normalized().dot(dir) * 0.5
+		if оценка > лучший:
+			лучший = оценка
+			лучшая = dir
+	if лучшая == Vector3.ZERO:
+		лучшая = -player_node.global_transform.basis.z
+		лучшая.y = 0.0
+		лучшая = лучшая.normalized() if лучшая.length() > 0.01 else Vector3.FORWARD
+	# Четыре метра в сторону и два с половиной вверх: он занимает половину
+	# кадра, и видно ЦЕЛИКОМ — тушу, поднятые руки и то, что они делают.
+	fat_to = monster.global_position + лучшая * 4.0 + Vector3(0.0, 2.5, 0.0)
+	# И СВЕТ. Тварь нарочно затемнена — на добивании это оборачивается тем, что
+	# смотреть не на что. Здесь она видна целиком: это последнее, что игрок
+	# вообще увидит в этом заходе.
+	monster.set_lit(1.0)
 	monster.strike_at(player_node.global_position + Vector3(0.0, PlayerScript.CHEST_Y, 0.0), 9.0)
 	if sfx != null:
 		# Весь фон уходит на всё добивание: там должно быть слышно только его.
@@ -2894,37 +2941,51 @@ func _update_fatality(delta: float) -> void:
 		monster._aim_reach(player_node.global_position + Vector3(0, 1.0, 0))
 		if fat_t <= 0.0:
 			fat_stage = 2
-			fat_t = 1.5
+			fat_t = 2.4
 			if sfx != null:
 				sfx.play("hit_low", 5.0)
 				sfx.play("scream", 5.0)
 		return
 	if fat_stage == 2:
 		# ПОДНИМАЕТ НАД СОБОЙ. Медленно: это и есть весь кадр.
-		var k2: float = 1.0 - clampf(fat_t / 1.5, 0.0, 1.0)
+		var k2: float = 1.0 - clampf(fat_t / 2.4, 0.0, 1.0)
 		var e2: float = k2 * k2 * (3.0 - 2.0 * k2)
 		player_node.global_position = fat_from.lerp(fat_to, e2)
+		# ВЗГЛЯД — НА НЕГО, а не вниз. Угол вниз писался под старую точку, где
+		# он был ровно под ногами; отойдя в сторону, тот же угол смотрел в пол
+		# рядом с ним. Голову ведём к морде: она и есть то, на что тут смотрят.
+		player_node.aim_head(monster.look_point(), 5.0, delta)
 		if head != null:
-			# Смотрит вниз, на то, что его держит.
-			head.rotation.x = -e2 * 0.85
 			head.rotation.z = lerpf(0.5 * fat_roll, 0.12 * fat_roll, e2)
 		monster._aim_reach(player_node.global_position)
+		monster._face_player(player_node.global_position)
 		if fat_t <= 0.0:
 			fat_stage = 3
-			fat_t = 1.15
-			monster.grab_hold(1.4)
+			fat_t = 2.4
+			monster.grab_hold(2.6)
 		return
 	if fat_stage == 3:
 		# ДЕРЖИТ. Щупальца сходятся, кадр медленно поворачивается.
-		var k3: float = 1.0 - clampf(fat_t / 1.15, 0.0, 1.0)
-		player_node.global_position = fat_to + Vector3(0.0, sin(k3 * PI) * 0.18, 0.0)
+		var k3: float = 1.0 - clampf(fat_t / 2.4, 0.0, 1.0)
+		# Болтает сильнее и дольше: это те самые секунды, ради которых сцена и
+		# существует, — он держит, руки сходятся, и ничего сделать нельзя.
+		player_node.global_position = fat_to + Vector3(
+			sin(k3 * PI * 2.0) * 0.12, sin(k3 * PI) * 0.26, 0.0)
+		player_node.aim_head(monster.look_point(), 4.0, delta)
 		if head != null:
-			head.rotation.x = -0.85 + sin(k3 * PI) * 0.10
 			head.rotation.z = 0.12 * fat_roll + k3 * 0.30 * fat_roll
 		monster._aim_reach(player_node.global_position)
+		monster._face_player(player_node.global_position)
+		# И РЫК ПОСРЕДИНЕ. Тишина тут не работает: он держит тебя в руках, и
+		# молчащая туша читается декорацией.
+		if k3 > 0.45 and not fat_roared:
+			fat_roared = true
+			if sfx != null:
+				sfx.play_at("roar", monster.global_position, 8.0)
+				sfx.play("strain", 4.0)
 		if fat_t <= 0.0:
 			fat_stage = 4
-			fat_t = 0.42
+			fat_t = 0.9
 			if sfx != null:
 				sfx.play("hit_low", 6.0)
 				sfx.play("hit_mid", 6.0)
@@ -2934,11 +2995,21 @@ func _update_fatality(delta: float) -> void:
 	# РАЗРЫВ. Показывать нечего — кадр рвётся сам: два коротких рывка в разные
 	# стороны и обрыв в темноту НА СЕРЕДИНЕ движения. То, чего не показали,
 	# зритель достроит сам, и достроит хуже, чем нарисовал бы я.
-	var k4: float = 1.0 - clampf(fat_t / 0.42, 0.0, 1.0)
+	var k4: float = 1.0 - clampf(fat_t / 0.9, 0.0, 1.0)
+	# РАЗРЫВ ВИДНО ПО КАДРУ: два рывка в разные стороны, и на втором свет
+	# гаснет. Рывки теперь шире и медленнее — на 0.42 с они сливались в дрожь.
 	if head != null:
-		head.rotation.z = 0.42 * fat_roll + sin(k4 * PI * 3.0) * 0.55
-		head.rotation.x = -0.85 + k4 * 0.7
-	if k4 > 0.45:
+		head.rotation.z = 0.42 * fat_roll + sin(k4 * PI * 2.0) * 0.75
+		head.rotation.x = sin(k4 * PI * 2.0) * 0.35
+	player_node.global_position = fat_to + Vector3(
+		sin(k4 * PI * 2.0) * 0.5, -k4 * 0.35, cos(k4 * PI * 2.0) * 0.3)
+	# И ЖИЖА НА ЭКРАН. То, что рвут, — это ты; в кадре этого не покажешь (тела у
+	# игрока нет, вид от первого лица), но на стекле остаётся то, что брызнуло.
+	# Это и есть единственный способ показать разрыв изнутри.
+	if k4 > 0.30:
+		goo_amt = maxf(goo_amt, 0.55 + k4 * 0.4)
+		goo_hold = maxf(goo_hold, 1.2)
+	if k4 > 0.55:
 		_blink_shut(0.9)
 	if fat_t <= 0.0:
 		fat_stage = 0
@@ -3724,14 +3795,26 @@ func _on_solved() -> void:
 	fear = 1.0            # полотно сдано — страх отпускает
 	# ЕДИНСТВЕННОЕ ОРУЖИЕ ИГРОКА — ПОД СОМНЕНИЕ. Четвёртое полотно — уже
 	# привычка, шестое — уверенность; туда и бьём.
+	# РЕПЛИКА ЖДЁТ КАРТИНКУ, А НЕ СПОРИТ С НЕЙ. Тварь говорила прямо здесь, а
+	# через полсекунды поверх ложился кадр чужой истории и закрывал её собой.
+	# Играющий (21.09): «успел заметить, что монстр что-то сказал, но полностью
+	# не увидел, потому что показывалась картинка». Обе вещи дорогие, и обе
+	# редкие: пусть идут по очереди — сначала картинка, потом голос.
 	if says != null:
+		var фраза: String = ""
 		if board != null and board.time_max > 0.0 \
 				and board.time_left > board.time_max * 0.5:
-			says.try_say("v_pretty")
+			фраза = "v_pretty"
 		elif done == 4:
-			says.try_say("v_doors")
+			фраза = "v_doors"
 		elif done == 6:
-			says.try_say("v_who")
+			фраза = "v_who"
+		if фраза != "":
+			if vision_ui != null and done >= 1 and done <= 7 \
+					and vision_ui.есть(done - 1):
+				says_after = фраза
+			else:
+				says.try_say(фраза)
 	# Взводим сразу, если следующее полотно и так далеко. Ждать шага в сторону надо
 	# только когда цель рядом — иначе игрок мог застрять со снятым взводом.
 	canvas_arm = done >= n_canv or not _near(canv_cells[done])
@@ -3763,6 +3846,11 @@ func _on_solved() -> void:
 func _on_vision_closed() -> void:
 	_freeze_player(false)
 	_update_hud()
+	# И ТЕПЕРЬ ГОЛОС. Он ждал, пока досмотрят картинку (см. _on_solved).
+	if says_after != "" and says != null:
+		var ф: String = says_after
+		says_after = ""
+		says.try_say(ф)
 
 
 func _on_failed() -> void:
@@ -5579,6 +5667,29 @@ func _update_sound(delta: float) -> void:
 ## о стену, руки с потолка, язык, подтягивание, хват, — и до сих пор ничто не
 ## мешало второму начаться поверх первого. Получалась каша: тебя тянут
 ## щупальцем, и в этот же миг он швыряет тебя в стену.
+## ЧТО ИМЕННО СЧИТАЕТСЯ «ДРУГОЙ АТАКОЙ». Для журнала: «идёт другая атака» —
+## это восемь разных вещей, и пока они свалены в кучу, причина неизвестна.
+func _attack_why() -> String:
+	var l: Array[String] = []
+	if slam_stage > 0:
+		l.append("удар о стену %d" % slam_stage)
+	if hf_stage > 0:
+		l.append("приём фигуры %d" % hf_stage)
+	if lift_on:
+		l.append("подъём над полом")
+	if reel_t > 0.0:
+		l.append("подтягивание %.1f" % reel_t)
+	if hurl_t > 0.0:
+		l.append("бросок %.1f" % hurl_t)
+	if still_t > 0.0:
+		l.append("замри %.1f" % still_t)
+	if climb_state > 0:
+		l.append("подъём в пролом %d" % climb_state)
+	if grab_ui != null and grab_ui.visible:
+		l.append("хват")
+	return ", ".join(l) if not l.is_empty() else "ничего"
+
+
 func _attack_busy() -> bool:
 	# И БРОСОК. Без него фигура, пока игрока швыряет, считала его свободным и
 	# тут же пускала язык: язык тянул к ней, бросок от неё, и игрок застревал в
@@ -5735,6 +5846,12 @@ func _update_mon_lamp() -> void:
 		e *= clampf((d - 0.7) / 1.5, 0.12, 1.0)
 	if (grab_ui != null and grab_ui.visible) or reel_t > 0.0 or lift_on:
 		e *= 0.25
+	# КРОМЕ ДОБИВАНИЯ. Все правила выше писались под «он закрывает собой весь
+	# экран»; на добивании игрок теперь висит в трёх метрах СБОКУ, и там как
+	# раз надо видеть, что с ним делают. Это последний кадр захода — он должен
+	# быть виден целиком.
+	if fat_stage > 0:
+		e = 5.5
 	mon_lamp.light_energy = e
 	if mon_fill != null:
 		mon_fill.light_energy = e * 0.34
@@ -5904,7 +6021,7 @@ func _update_raid(delta: float) -> void:
 		_raid_why("фаза %d" % phase)
 		return
 	if _attack_busy():
-		_raid_why("идёт другая атака")
+		_raid_why("идёт другая атака: " + _attack_why())
 		return
 	if cine != 0 or paused():
 		return
@@ -6844,7 +6961,8 @@ func _on_revealed() -> void:
 		# И ГОВОРИМ, ЧТО ПОКАЗ ПРОПАЛ. Молчащий пропуск не отличить от «показа
 		# не было»: играющий прошёл игру целиком и не увидел ни одного, а
 		# журнал об этом не сказал ни слова.
-		print("[журнал] %.0f с: показ пропущен (полотно/записка/атака)" % _clock)
+		print("[журнал] %.0f с: показ пропущен — окно %s, атака: %s"
+			% [_clock, str(_ui_blocking()), _attack_why()])
 		monster.start_rush(0.0)
 		return
 	var cam: Camera3D = player_node.camera
@@ -6854,6 +6972,10 @@ func _on_revealed() -> void:
 	cine_from = cam.global_transform
 	cine_cam = Camera3D.new()
 	cine_cam.fov = cam.fov
+	# И ГЛУБИНУ БЕРЁМ ТУ ЖЕ. Иначе показ идёт с настройками по умолчанию
+	# (0.05..4000), а это ровно та точность буфера, из-за которой дрожат стыки.
+	cine_cam.near = cam.near
+	cine_cam.far = cam.far
 	add_child(cine_cam)
 	cine_cam.global_transform = cine_from
 	cine_cam.current = true
