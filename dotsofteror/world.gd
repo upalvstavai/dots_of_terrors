@@ -515,6 +515,7 @@ var climb: Node3D               ## насыпь целиком, вместе с 
 var climb_a: Vector3            ## низ ската
 var climb_b: Vector3            ## верх ската, у самого пролома
 var climb_state: int = 0        ## 0 стоит, 1 наверху, 2 тянет вниз, 3 уходит под землю
+var climb_done: bool = false    ## насыпь уже отыграна: второй раз наверх нельзя
 var climb_t: float = 0.0
 ## ПОДЪЁМ РЫВКАМИ. Три перехвата за 2.4 с: одна плавная кривая читалась полётом.
 const CLIMB_T := 2.4
@@ -3771,6 +3772,14 @@ func _update_board3d(delta: float) -> void:
 
 
 func _close_board() -> void:
+	# КТО ЗАКРЫЛ ПОЛОТНО. Три обработчика зовут это место, и каждый пишет своё
+	# («сдано», «сорвалось», «бросил сам»), но в логе играющего набег обрывался
+	# в ту же секунду, в которую начинался, и ни одной из трёх строк рядом не
+	# было. Значит закрывает кто-то четвёртый; метка стоит здесь, чтобы это
+	# стало видно.
+	if board.visible:
+		print("[журнал] %.0f с: полотно закрыто (сдано %d, нарисовано %d из %d)"
+			% [_clock, done, board.next_idx, board.n])
 	board.visible = false
 	# И СЧИТАТЬ ПЕРЕСТАЁТ. Раньше полотно само гасило себе _process на
 	# последней точке; теперь оно живёт лишние полсекунды ради вспышки, и
@@ -4376,7 +4385,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("read"):
 		if note_ui.visible:
 			note_ui.close()
-		elif climb_ready and climb_state == 0 and not _busy():
+		elif climb_ready and climb_state == 0 and not climb_done and not _busy():
 			_start_climb_up()
 		elif not _pick_wand():
 			_read_table()
@@ -5994,6 +6003,7 @@ func _update_raid(delta: float) -> void:
 		# сданных: сдал — успел, а всё остальное (сорвал, бросил, кончилось
 		# время) — не успел.
 		if not board.visible or dead or won or lab:
+			print("[журнал] %.0f с: набег кончился — полотно %s, смерть %s, сдано %d (начинали на %d)" % [_clock, str(board.visible), str(dead), done, raid_canv])
 			_raid_stop(done > raid_canv)
 			return
 		# Полоска подхода — от честного пути по коридорам, а не от расстояния
@@ -9385,7 +9395,21 @@ func _update_climb(delta: float) -> void:
 		climb.position.y -= delta * 3.0
 		player_node.global_position.y = 0.85
 		if climb_t <= 0.0:
-			climb_state = 4
+			# КОНЕЦ СЦЕНЫ — ЭТО НОЛЬ, А НЕ ЧЕТЫРЕ.
+			#
+			# Здесь оставалось climb_state = 4 как метка «насыпь ушла, второй
+			# раз не подняться». Но это же поле значит «сейчас идёт подъём»: его
+			# проверяет _attack_busy, а через него — половина игры. После первого
+			# же подъёма в пролом игрок получал мир, в котором НАВСЕГДА «идёт
+			# другая атака»: не начинались набеги, пропускались показы камерой,
+			# фигура не применяла ни одного своего приёма, и тварь переставала
+			# говорить вовсе. В логе играющего это видно прямо: «набега нет —
+			# идёт другая атака: подъём в пролом 4», дважды на седьмом полотне.
+			#
+			# Метку «уже лазил» держим отдельным полем, а состояние сцены
+			# честно возвращаем в ноль.
+			climb_state = 0
+			climb_done = true
 			climb.queue_free()
 			climb = null
 
