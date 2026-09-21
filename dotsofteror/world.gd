@@ -377,6 +377,7 @@ var back_done: Array[int] = []    ## на каких полотнах за сп�
 var back_marks: Array = []        ## сами отпечатки: их видно до конца захода
 var stare_t: float = 0.0          ## сколько игрок смотрит на него в упор
 var _scare_last: int = -1         ## каким ударом пугали в прошлый раз
+var _gone_said: bool = false      ## уже пожаловались, что исчезла из хвата
 var outings: int = 0              ## сколько раз он уже показывался
 var out_gap: float = 99.0         ## сколько он уже сидит в камне между выходами
 var out_since: float = 0.0        ## сколько длится нынешний выход
@@ -3396,6 +3397,19 @@ func _process(delta: float) -> void:
 		# ЧЕМ ОН ЗАНЯТ — от этого зависит, когда она выйдет. См. pressure в
 		# Monster.gd: за таймером её выучивают, за поведением — нет.
 		monster.draw_now = board != null and board.visible
+		# ЧТО СЕЙЧАС ИДЁТ. Тварь не знает про хват, подтягивание и бросок — про
+		# них знает только мир. Без этого она ныряла в камень прямо из
+		# собственной атаки: играющий увидел, как она пропадает, поймав его.
+		monster.busy = _attack_busy()
+		# И СТОРОЖ НА ЭТО ЖЕ. Если тварь всё-таки оказалась в камне, пока идёт
+		# её собственный хват, — это то самое, что играющий увидел глазами, и
+		# в журнале оно должно называться своим именем.
+		if grab_ui != null and grab_ui.visible and grab_src == "monster" \
+				and monster.mode == "inwall" and not _gone_said:
+			_gone_said = true
+			print("[журнал] %.0f с: ОНА ИСЧЕЗЛА ИЗ СОБСТВЕННОГО ХВАТА" % _clock)
+		elif grab_ui != null and not grab_ui.visible:
+			_gone_said = false
 		var vflat: float = Vector2(player_node.velocity.x, player_node.velocity.z).length()
 		if vflat < 0.4:
 			monster.still_t += delta
@@ -4754,7 +4768,17 @@ func _update_flee(delta: float) -> void:
 		# он уходит в камень, и точка. Иначе оставался случай, когда травля уже
 		# отпущена по времени, а тварь всё равно ходит кругами у порога.
 		grab_run = 0
-		if monster.visible and monster.mode != "inwall" and monster.mode != "gone":
+		# НО НЕ ПОКА ОН ТЕБЯ ДЕРЖИТ. Правило писалось про порог убежища: добежал
+		# — он ушёл. А срабатывало оно и в хвате: игрока схватили у самого круга,
+		# и тварь уходила в камень прямо из собственной атаки — экран показывал
+		# борьбу с тем, кого уже нет. Играющий увидел это глазами и сказал:
+		# «если поймал, во время атаки пропадает».
+		#
+		# Схватил — значит сначала хват, а убежище потом: вырвешься и добежишь.
+		var держит: bool = (grab_ui != null and grab_ui.visible
+			and grab_src == "monster") or reel_t > 0.0 or lift_on or hurl_t > 0.0
+		if not держит and monster.visible and monster.mode != "inwall" \
+				and monster.mode != "gone":
 			monster.retreat_to_wall(10.0, 20.0)
 			hud.text = Lang.t("h_safe")
 			if sfx != null:
