@@ -863,6 +863,11 @@ func sting(kind: String, volume_db: float = 0.0) -> void:
 		heard.append({"имя": "удар:" + kind, "дб": volume_db,
 			"где": Vector3.ZERO, "из точки": false})
 	if not _stings.has(kind):
+		# МОЛЧА — ЗНАЧИТ НЕЗАМЕТНО. Ключи здесь русские («лицо», «угол»,
+		# «погоня»), и вызовы с английскими именами просто ничего не играли:
+		# три удара, добавленных ради страха, не звучали вовсе, и узналось это
+		# случайно. Незнакомый ключ теперь виден в логе.
+		push_warning("удар «%s» не найден: есть %s" % [kind, str(_stings.keys())])
 		return
 	for pl in _pool:
 		if not pl.playing:
